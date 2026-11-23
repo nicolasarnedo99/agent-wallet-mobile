@@ -4,6 +4,7 @@
 //   npm run smoke            # the payment
 //   npm run smoke -- --call  # the payment, then a zero USDC approve through call() and transaction()
 //
+// SMOKE_URL is the x402 resource to pay and SMOKE_PAY_TO the address it is paid at; put both in .env.local, which git ignores.
 // The email and the code are typed with echo off, go to the library and nowhere else. The session stays in this process's
 // memory. smoke-result.json gets the address, the balances and the transaction hashes: nothing secret.
 import { writeFileSync } from 'node:fs';
@@ -13,9 +14,9 @@ import { createPublicClient, encodeFunctionData, erc20Abi, http, parseEventLogs 
 import { AgentWalletError, NETWORKS, createAgentWallet, memoryStorage } from '../dist/index.js';
 import { payOnce } from '../examples/expo-app/x402.ts';
 
-// The one seller this script pays: Nest's merchant lookup. payOnce refuses any 402 that differs from TERMS before Circle is asked to sign.
-const RESOURCE = 'https://seller.example/paid';
-const PAYEE = '0x30ABfbE1Ae448515d2671D9E3C02f5Bf437d8048';
+// The one seller this script pays. payOnce refuses any 402 that differs from TERMS before Circle is asked to sign.
+const RESOURCE = process.env.SMOKE_URL;
+const PAYEE = process.env.SMOKE_PAY_TO;
 const USDC = NETWORKS.arc.usdc;
 const TERMS = { network: 'eip155:5042002', asset: USDC, name: 'USDC', version: '2', maxAmount: 10_000n /* 0.01 USDC */, payTo: PAYEE };
 const chain = createPublicClient({ transport: http('https://rpc.testnet.arc.io') });
@@ -36,6 +37,7 @@ export async function onChain(hash, eventName, matches) {
 }
 
 async function main() {
+  if (!RESOURCE || !/^0x[0-9a-fA-F]{40}$/.test(PAYEE ?? '')) throw new Error('Set SMOKE_URL and SMOKE_PAY_TO (see the top of this file)');
   const withCall = process.argv.includes('--call');
   const result = { package: 'dist/ built from this checkout', network: 'arc', ranAt: new Date().toISOString() };
   const agent = createAgentWallet({ network: 'arc' });
