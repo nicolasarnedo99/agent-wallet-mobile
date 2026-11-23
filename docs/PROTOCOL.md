@@ -78,7 +78,7 @@ Login. The token in the headers is the device token throughout.
 
 The session's expiry is the `exp` claim of the `userToken` JWT (`session.ts:542`). The CLI throws the refresh token away (`auth-flow.ts:232`), and this library never reads it.
 
-On a first login (`bootstrap`) the CLI goes on to `POST /v1/w3s/user/initialize` with `{idempotencyKey, accountType: "SCA", blockchains: […]}`, approves the challenge it returns, and so creates a smart contract account on every chain (`circle-http-client.ts:395`, `auth-flow.ts:264`). This library does not: it stops and asks for one login in the CLI.
+On a first login (`bootstrap`) the CLI goes on to `POST /v1/w3s/user/initialize` with `{idempotencyKey, accountType: "SCA", blockchains: […]}`, approves the challenge it returns, and so creates a smart contract account on every chain (`circle-http-client.ts:395`, `auth-flow.ts:264`). This library does the same on testnet, with the CLI's list of nine testnet chains (`chain-map.ts:286`); a 409 means the account is already set up. Unlike the CLI, it treats a creation that fails or times out as an error and keeps no session. On mainnet it stops and asks for one login in the CLI. This path has run against the stand-in only.
 
 With a session. The token in the headers is the user token.
 
@@ -125,4 +125,12 @@ The signature Circle returns for the wallet was 65 bytes in the two cases measur
 
 ## Not covered
 
-The CLI does more than this library: the first-login bootstrap, an older login path for accounts from before Auth V2 (`POST /v1/w3s/users/email/token`, then `POST /v1/w3s/sdk/users/email/verifyOTP`), passkeys, token transfers, fee estimates, cancelling and accelerating transactions, spending policies (mainnet, through `/proxy/live-user`), Gateway balances and service search. Those were read only as far as needed to leave them out.
+Three more calls this library makes were read in the CLI's source and have run against the stand-in only:
+
+| Call | Request | Response | Source |
+|---|---|---|---|
+| `POST /v1/w3s/user/transactions/transfer` | `{idempotencyKey, walletId, sourceAddress, destinationAddress, amounts: ["0.01"], blockchain, tokenAddress, feeLevel: "MEDIUM"}` | `{challengeId}`, then approved and polled like a contract call | `circle-http-client.ts:808` |
+| `POST /fund` (testnet proxy, no `/v1/w3s`) | `{address, blockchain, token: "usdc" \| "eth" \| "eurc" \| "native"}` | unused; the tokens arrive later | `commands/wallet/fund.ts:391` |
+| `GET https://api.circle.com/v2/x402/discovery/resources?query=&category=&limit=&offset=&siwx=false` | no token | `{items: [{resource, metadata: {provider, method, description}, accepts: [{amount, network}]}], pagination}` | `commands/services/search.ts:88` |
+
+The CLI does more than this library: an older login path for accounts from before Auth V2 (`POST /v1/w3s/users/email/token`, then `POST /v1/w3s/sdk/users/email/verifyOTP`), passkeys, fee estimates, cancelling and accelerating transactions, spending policies (mainnet, through `/proxy/live-user`) and Gateway. Those were read only as far as needed to leave them out.

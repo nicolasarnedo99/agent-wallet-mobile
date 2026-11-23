@@ -13,7 +13,7 @@ It is not on npm. Install it from a checkout (`npm install ../agent-wallet-mobil
 ```ts
 import 'react-native-get-random-values';
 import * as Keychain from 'react-native-keychain';
-import { createAgentWallet, keychainStorage } from 'agent-wallet-mobile';
+import { createAgentWallet, keychainStorage, searchServices } from 'agent-wallet-mobile';
 
 const agent = createAgentWallet({ network: 'arc', storage: keychainStorage(Keychain) });
 
@@ -31,6 +31,13 @@ registerExactEvmScheme(x402client, { signer: await agent.x402Signer() });
 
 // Send one contract call. Circle's bundler submits it; the promise resolves once Circle reports it confirmed.
 const { hash } = await agent.call({ to: contract, data: calldata });
+
+// Send USDC (or another token, by its contract address), and top up from Circle's testnet faucet.
+await agent.transfer({ to: recipient, amount: '0.01' });
+await agent.fund();
+
+// Paid services in Circle's Agent Marketplace. Public: it needs no login.
+const services = await searchServices({ query: 'restaurants' });
 
 await agent.logout();                 // revoke this session at Circle; logout('all') revokes every device's
 ```
@@ -70,9 +77,9 @@ The API is undocumented. Every call was read out of the CLI's published source (
 
 A session cannot be refreshed. The CLI never keeps a refresh token and neither does this client, so when the session expires (the `exp` of the user token) the user logs in again with a new code.
 
-A new account's first login has to happen in Circle's CLI. That first login creates the wallets (Circle calls it bootstrap), and this client stops with `needs_cli_bootstrap` instead of doing it. Run `circle wallet login --testnet` (or without the flag for mainnet) once, then log in here. Accounts from before Circle's current login flow use an older path this client does not implement either.
+A new account's first login creates its wallets (Circle calls it bootstrap). On Arc testnet this client now does that itself, but only against the stand-in so far: no brand-new account has logged in through it. On Base mainnet it still stops with `needs_cli_bootstrap`; run `circle wallet login` once, then log in here. Accounts from before Circle's current login flow use an older path this client does not implement either.
 
-It signs typed data and sends contract calls, and that is all: no `signMessage`, no raw transactions, no token-transfer shortcut, no spending policies, no Gateway. `call()` waits at most a minute for the approval and a minute for the transaction. A transaction that outlasts its minute throws with its id in the message, and `transaction(id)` reports where it stands.
+It signs typed data, sends contract calls and token transfers, asks the testnet faucet and searches the marketplace. It has no `signMessage`, no raw transactions, no Gateway, and it cannot read or set spending limits. `transfer()`, `fund()` and `searchServices()` are tested against the stand-in only: none has been sent to Circle from this package. `call()` waits at most a minute for the approval and a minute for the transaction. A transaction that outlasts its minute throws with its id in the message, and `transaction(id)` reports where it stands.
 
 Only an iPhone has run this code. Android goes through the same `react-native-keychain` call and should work, but nobody has tried. The approval request still carries the device description the CLI sends (`WebSDK`, `Desktop`), because that is the only value known to pass.
 
