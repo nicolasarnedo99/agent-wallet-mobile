@@ -33,6 +33,12 @@ export type X402Signer = { readonly address: Hex; signTypedData(data: TypedData)
 export type TransactionStatus = { id: string; state: string; hash: Hex | null; errorReason: string | null };
 // One paid resource from Circle's Agent Marketplace; `accepts` lists what it charges, in base units, on which network.
 export type Service = { url: string; method: string | null; description: string | null; provider: string | null; accepts: { amount: string; network: string }[] };
+// One of Circle's spending rules on the wallet. Amounts are decimal strings in whole tokens; null means no cap in that window.
+// `origin` is DEFAULT for Circle's own rule and CUSTOM for one the owner set; only a custom rule has an id.
+export type Limit = { policyType: string; ruleType: string; blockchain: string | null; perTx: string | null; daily: string | null; weekly: string | null;
+  monthly: string | null; addresses: string[]; origin: string; id: string | null };
+export type Budget = { policyType: string; perTx: string | null; daily: string | null; dailyRemaining: string | null; weekly: string | null; weeklyRemaining: string | null;
+  monthly: string | null; monthlyRemaining: string | null; origin: string };
 export type Storage = { get(key: string): Promise<string | null>; set(key: string, value: string): Promise<void>; remove(key: string): Promise<void> };
 
 export type ErrorCode = 'not_logged_in' | 'session_expired' | 'needs_cli_bootstrap' | 'wrong_code' | 'invalid_input' | 'http' | 'protocol' | 'transaction_failed' | 'limit_exceeded';
@@ -99,12 +105,16 @@ function jwtPayload(token: string): any {
 
 type Fetch = typeof fetch;
 // `quiet` leaves Circle's own message out of errors: during a login it could echo the email or the code.
-type Target = { network: Network; quiet?: boolean };
+// `base` replaces the network's proxy: Circle's limits are served from the service root, and their owner logs in through a proxy of its own.
+type Target = { network: Network; quiet?: boolean; base?: string };
+const ROOT = 'https://agentic-wallet.circle.com';
+const OWNER_PROXY = `${ROOT}/proxy/live-user`; // mainnet only: there is no testnet counterpart
 type Who = Target & { appId: string; deviceId: string };
 
 // Only the status, Circle's numeric code and (outside a login) its short message are kept: a body could echo credentials.
-async function request(f: Fetch, on: Target, method: 'GET' | 'POST', path: string, headers: Record<string, string>, body?: string): Promise<any> {
-  const response = await f(`${NETWORKS[on.network].proxy}${path}`, { method, headers: { 'Content-Type': 'application/json', ...headers }, ...(body === undefined ? {} : { body }) });
+type Method = 'GET' | 'POST' | 'DELETE';
+async function request(f: Fetch, on: Target, method: Method, path: string, headers: Record<string, string>, body?: string): Promise<any> {
+  const response = await f(`${on.base ?? NETWORKS[on.network].proxy}${path}`, { method, headers: { 'Content-Type': 'application/json', ...headers }, ...(body === undefined ? {} : { body }) });
   const text = await response.text();
   let json: any = {};
   try { json = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
@@ -112,7 +122,7 @@ async function request(f: Fetch, on: Target, method: 'GET' | 'POST', path: strin
     !on.quiet && typeof json?.message === 'string' ? `: ${json.message.slice(0, 120)}` : ''}`, response.status);
   return json ?? {};
 }
-async function plain(f: Fetch, on: Target, method: 'GET' | 'POST', path: string, token?: string, body?: unknown, headers: Record<string, string> = {}): Promise<any> {
+async function plain(f: Fetch, on: Target, method: Method, path: string, token?: string, body?: unknown, headers: Record<string, string> = {}): Promise<any> {
   const json = await request(f, on, method, path, { ...(token ? { 'X-User-Token': token } : {}), ...headers }, body === undefined ? undefined : JSON.stringify(body));
   return json.data ?? json;
 }
@@ -165,8 +175,8 @@ type PendingLogin = Who & { email: string; deviceToken: string; deviceEncryption
   otpToken: string; otpHead?: string; firstLogin: boolean };
 
 // Circle emails the code. Throws, before the code is asked for, at an account the Circle CLI has not set up yet.
-async function startLogin(f: Fetch, network: Network, email: string, keys: LoginKeys): Promise<PendingLogin> {
-  const on: Target = { network, quiet: true };
+async function startLogin(f: Fetch, network: Network, email: string, keys: LoginKeys, base?: string): Promise<PendingLogin> {
+  const on: Target = { network, quiet: true, ...(base ? { base } : {}) };
   const deviceId = uuid();
   const device = await plain(f, on, 'POST', '/v1/w3s/auth/deviceToken', undefined, { idempotencyKey: uuid(), deviceId });
   if (typeof device.deviceToken !== 'string' || typeof device.deviceEncryptionKey !== 'string') throw broken('Circle sent no device credentials');
@@ -174,7 +184,7 @@ async function startLogin(f: Fetch, network: Network, email: string, keys: Login
     registeredFactors: [{ factor: 'email_otp', emailOtp: { destination: email, suite: 'RSA_OAEP_256_A256GCM', publicKey: keys.publicKey } }] });
   // A first login also creates the wallets. On mainnet that is still left to the CLI: nothing here has created mainnet wallets.
   const firstLogin = challenge.operation === 'bootstrap';
-  if (firstLogin && network !== 'arc') throw new AgentWalletError('needs_cli_bootstrap',
+  if (firstLogin && network !== 'arc' && !base) throw new AgentWalletError('needs_cli_bootstrap',
     `No agent wallets on this account yet: log in once with the Circle CLI (${NETWORKS[network].cliLogin}), then here`);
   if ((!firstLogin && challenge.operation !== 'login') || typeof challenge.challengeId !== 'string' || typeof challenge.correlationState !== 'string')
     throw broken('Circle answered the login with an unexpected challenge');
@@ -205,8 +215,8 @@ function fullCode(typed: string, head?: string): string {
   return `${head ?? match[1]!.toUpperCase()}-${match[2]}`;
 }
 
-// The code goes into one encrypted request and nowhere else.
-async function finishLogin(f: Fetch, pending: PendingLogin, typed: string): Promise<Session> {
+// The code goes into one encrypted request and nowhere else. Circle's answer, once it has confirmed the login.
+async function submitCode(f: Fetch, pending: PendingLogin, typed: string): Promise<any> {
   const code = fullCode(typed, pending.otpHead);
   let done: any;
   try {
@@ -217,8 +227,7 @@ async function finishLogin(f: Fetch, pending: PendingLogin, typed: string): Prom
     if (error instanceof AgentWalletError && (error.status === 400 || error.status === 401)) throw new AgentWalletError('wrong_code', 'Wrong or expired code: ask for a new one', error.status);
     throw error;
   }
-  if (String(done.state).toLowerCase() !== 'completed' || ['userToken', 'encryptionKey', 'userSecret', 'storageKey'].some(field => typeof done[field] !== 'string' || !done[field]))
-    throw broken('Circle did not complete the login');
+  if (String(done.state).toLowerCase() !== 'completed' || typeof done.userToken !== 'string' || !done.userToken) throw broken('Circle did not complete the login');
   // Circle confirms the challenge a moment after it completes, so not-yet and 5xx are retried as the CLI does; a 4xx is final.
   let confirmed = false;
   for (const wait of [0, 400, 1200, 2800]) {
@@ -231,6 +240,12 @@ async function finishLogin(f: Fetch, pending: PendingLogin, typed: string): Prom
     }
   }
   if (!confirmed) throw broken('Circle did not confirm the login');
+  return done;
+}
+
+async function finishLogin(f: Fetch, pending: PendingLogin, typed: string): Promise<Session> {
+  const done = await submitCode(f, pending, typed);
+  if (['encryptionKey', 'userSecret', 'storageKey'].some(field => typeof done[field] !== 'string' || !done[field])) throw broken('Circle did not complete the login');
   const exp = jwtPayload(done.userToken)?.exp;
   if (typeof exp !== 'number') throw broken('Circle sent a session with no expiry');
   const { blockchain } = NETWORKS[pending.network];
@@ -332,6 +347,9 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
   const key = `circle-agent-wallet.${network}`;
   let keys: Promise<LoginKeys> | null = null;
   let pending: PendingLogin | null = null;
+  // The owner's login for changing limits: its token is never stored, and is dropped after ten minutes or at logout.
+  let ownerPending: PendingLogin | null = null;
+  let owner: { token: string; until: number } | null = null;
 
   // The stored session, expired or not; null when there is none for this network.
   async function session(): Promise<Session | null> {
@@ -447,10 +465,79 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
       const s = await live();
       return status(id, (await plain(f, s, 'GET', `/v1/w3s/transactions/${encodeURIComponent(id)}`, s.userToken)).transaction);
     },
+    // Circle's spending limits on this wallet. They exist on mainnet only, and Circle enforces them before it signs or sends anything.
+    // Reading takes the agent's session. Changing takes the wallet owner's own login, a second emailed code: the agent cannot raise
+    // its own limits.
+    limits: (() => {
+      const policy: Target = { network, base: ROOT };
+      const mainnet = () => { if (network !== 'base') throw new AgentWalletError('invalid_input', "Circle's limits exist on mainnet only"); };
+      const cap = (value: unknown) => (typeof value === 'string' && value ? value : null);
+      const ownerToken = () => {
+        if (!owner || Date.now() >= owner.until) { owner = null; throw new AgentWalletError('not_logged_in', 'Changing limits needs the owner login: limits.owner.start, then limits.owner.finish'); }
+        return owner.token;
+      };
+      async function read(): Promise<Limit[]> {
+        mainnet(); const s = await live();
+        const { policies } = await plain(f, policy, 'GET', `/v1/policy/limit?${new URLSearchParams({ wallet_id: s.walletId, wallet_address: s.address, blockchain: NETWORKS[network].blockchain })}`, s.userToken);
+        if (!Array.isArray(policies)) throw broken('Circle sent no limits');
+        return policies.map((row: any) => ({ policyType: String(row?.policy_type), ruleType: String(row?.rule_type), blockchain: cap(row?.blockchain), perTx: cap(row?.per_tx_limit),
+          daily: cap(row?.daily_limit), weekly: cap(row?.weekly_limit), monthly: cap(row?.monthly_limit), addresses: Array.isArray(row?.addresses) ? row.addresses : [],
+          origin: String(row?.origin), id: cap(row?.policy_id) }));
+      }
+      return {
+        read,
+        // What is left to spend in each window, by rule type.
+        async budget(): Promise<Budget[]> {
+          mainnet(); const s = await live();
+          const { policies } = await plain(f, policy, 'GET', `/v1/policy/budget?wallet_address=${s.address.toLowerCase()}`, s.userToken);
+          if (!policies || typeof policies !== 'object') throw broken('Circle sent no budget');
+          return Object.entries(policies).map(([policyType, row]: [string, any]) => ({ policyType, perTx: cap(row?.per_tx_limit), daily: cap(row?.daily_limit), dailyRemaining: cap(row?.daily_remaining),
+            weekly: cap(row?.weekly_limit), weeklyRemaining: cap(row?.weekly_remaining), monthly: cap(row?.monthly_limit), monthlyRemaining: cap(row?.monthly_remaining), origin: String(row?.origin) }));
+        },
+        owner: {
+          // Circle emails a second code, to the same address as the agent's login.
+          async start(email: string): Promise<{ codePrefix: string | null }> {
+            mainnet(); await live();
+            ownerPending = null;
+            ownerPending = await startLogin(f, network, email.trim(), await loginKeys(), OWNER_PROXY);
+            return { codePrefix: ownerPending.otpHead ?? null };
+          },
+          async finish(code: string): Promise<void> {
+            if (!ownerPending) throw new AgentWalletError('invalid_input', 'No owner login in progress: call limits.owner.start first');
+            owner = { token: (await submitCode(f, ownerPending, code)).userToken, until: Date.now() + 10 * 60_000 };
+            ownerPending = null;
+          },
+        },
+        // A cap per payment, day, week and month on stablecoin transfers from this wallet on this chain, each at least the one
+        // before. It does not replace a custom limit: Circle refuses, and so does this, until reset() has removed the old one.
+        async set(limit: { perTx: string; daily: string; weekly: string; monthly: string }): Promise<void> {
+          mainnet(); const s = await live();
+          const amounts = [limit.perTx, limit.daily, limit.weekly, limit.monthly];
+          if (amounts.some(amount => typeof amount !== 'string' || !/^\d+(\.\d+)?$/.test(amount)) || amounts.some((amount, i) => i > 0 && Number(amount) < Number(amounts[i - 1])))
+            throw new AgentWalletError('invalid_input', 'Limits are decimals with perTx ≤ daily ≤ weekly ≤ monthly');
+          const token = ownerToken();
+          await plain(f, policy, 'POST', '/v1/policy', token, { wallet_id: s.walletId, blockchain: NETWORKS[network].blockchain, policy_type: 'STABLECOIN_TRANSFER', rule_type: 'TRANSFER_LIMIT',
+            params: { per_tx: limit.perTx, daily: limit.daily, weekly: limit.weekly, monthly: limit.monthly } }).catch(error => {
+            throw error instanceof AgentWalletError && error.status === 409 ? new AgentWalletError('invalid_input', 'A custom limit is already set: call limits.reset() first', 409) : error;
+          });
+        },
+        // Removes the owner's custom limits on this chain, which puts Circle's default back.
+        async reset(): Promise<void> {
+          mainnet(); await live();
+          const token = ownerToken();
+          for (const row of await read()) {
+            if (row.origin !== 'CUSTOM' || !row.id || row.blockchain !== NETWORKS[network].blockchain) continue;
+            await plain(f, policy, 'DELETE', `/v1/policy/${encodeURIComponent(row.id)}`, token)
+              .catch(error => { if (!(error instanceof AgentWalletError && error.status === 404)) throw error; }); // 404: already gone
+          }
+        },
+      };
+    })(),
     // Revokes the session at Circle ('local': this session; 'all': every device's, for a lost phone), then removes it from storage.
     // If Circle does not confirm, this throws and the session stays, so it can be retried; a session Circle already refuses (401,
     // or the 403 it answered a revoked session on Arc testnet) or one past its expiry is just removed.
     async logout(scope: 'local' | 'all' = 'local'): Promise<void> {
+      owner = null; ownerPending = null;
       const s = await session();
       if (s && !isExpired(s)) {
         try { await plain(f, s, 'POST', '/v1/w3s/users/token/deactivate', s.userToken, { idempotencyKey: uuid(), scope }); }

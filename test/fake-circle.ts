@@ -24,6 +24,9 @@ const device = { token: 'device-token', key: randomBytes(32).toString('base64') 
 const jwt = (payload: object) => `${[{ alg: 'none' }, payload].map(p => Buffer.from(JSON.stringify(p)).toString('base64url')).join('.')}.sig`;
 export const user = { token: jwt({ exp: Math.floor(Date.now() / 1000) + 3600 }), key: randomBytes(32).toString('base64') };
 const otpToken = jwt({ otpHead: HEAD });
+// The owner (Circle's "human") logs in through its own proxy and gets its own token, the only one allowed to change limits.
+export const OWNER_TOKEN = jwt({ exp: Math.floor(Date.now() / 1000) + 3600, owner: true });
+const ROOT = 'https://agentic-wallet.circle.com';
 
 const aes = (keyB64: string, value: unknown) => {
   const iv = randomBytes(12); const c = createCipheriv('aes-256-gcm', Buffer.from(keyB64, 'base64'), iv);
@@ -53,21 +56,51 @@ export function unwrapPinhash(encrypted: string): string {
   return unaes(key.toString('base64'), pinhash_struct).pinhash;
 }
 
-export function fakeCircle(network: Network = 'arc', options: { operation?: 'login' | 'bootstrap'; transaction?: object; deactivate?: number; overLimit?: boolean; initialize?: 409 | 'FAILED' } = {}) {
-  const { operation = 'login', transaction = { state: 'CONFIRMED', txHash: MINED }, deactivate = 204 } = options;
+export function fakeCircle(network: Network = 'arc', options: { operation?: 'login' | 'bootstrap'; transaction?: object; deactivate?: number; overLimit?: boolean; initialize?: 409 | 'FAILED'; customLimit?: boolean } = {}) {
+  const { transaction = { state: 'CONFIRMED', txHash: MINED }, deactivate = 204 } = options;
+  const DEFAULT_LIMIT: any = { policy_type: 'STABLECOIN_TRANSFER', rule_type: 'TRANSFER_LIMIT', per_tx_limit: '', daily_limit: '', weekly_limit: '', monthly_limit: '100', origin: 'DEFAULT' };
+  let policies: any[] = options.customLimit ? [{ ...DEFAULT_LIMIT, blockchain: 'BASE', per_tx_limit: '0.005', daily_limit: '0.01', weekly_limit: '0.05', monthly_limit: '0.1', origin: 'CUSTOM', policy_id: 'p-1' }] : [DEFAULT_LIMIT];
   const proxy = NETWORKS[network].proxy;
   const wallet = WALLETS[network];
   const calls: string[] = [];
-  const seen: { clientKey?: string; deviceId?: string; typedData?: any; approve?: any; execution?: any; polls?: number; deactivate?: any; transfer?: any; fund?: any; initialize?: any } = {};
+  const seen: { clientKey?: string; deviceId?: string; typedData?: any; approve?: any; execution?: any; polls?: number; deactivate?: any; transfer?: any; fund?: any; initialize?: any; policy?: any } = {};
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
   const fetch = async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = new URL(String(input));
-    expect(String(input).startsWith(`${proxy}/`)).toBe(true);
+    const owner = String(input).startsWith(`${ROOT}/proxy/live-user/`);
+    const policy = String(input).startsWith(`${ROOT}/v1/policy`); // the service's own routes, outside every proxy
+    expect(owner || policy || String(input).startsWith(`${proxy}/`)).toBe(true);
     const method = init.method ?? 'GET';
-    const path = url.pathname.slice(new URL(proxy).pathname.length);
+    const path = policy ? url.pathname : url.pathname.slice(owner ? '/proxy/live-user'.length : new URL(proxy).pathname.length);
     const headers = new Headers(init.headers);
     const body = typeof init.body === 'string' ? init.body : '';
-    calls.push(`${method} ${path}`);
+    calls.push(`${owner ? 'owner ' : ''}${method} ${path}`);
+    const operation = owner ? 'bootstrap' : options.operation ?? 'login'; // Circle may call an owner login a bootstrap; it sets up nothing
+    if (policy) {
+      const token = headers.get('x-user-token');
+      if (method === 'GET') expect(token).toBe(user.token); else expect(token).toBe(OWNER_TOKEN);
+      switch (`${method} ${path}`) {
+        case 'GET /v1/policy/limit':
+          expect(Object.fromEntries(url.searchParams)).toEqual({ wallet_id: wallet.id, wallet_address: wallet.address, blockchain: 'BASE' });
+          return json(200, { data: { wallet_id: wallet.id, policies } });
+        case 'GET /v1/policy/budget':
+          expect(url.searchParams.get('wallet_address')).toBe(wallet.address.toLowerCase());
+          return json(200, { data: { policies: { STABLECOIN_TRANSFER: { per_tx_limit: '', daily_limit: '', daily_remaining: '', weekly_limit: '', weekly_remaining: '',
+            monthly_limit: '100', monthly_remaining: '99.97', origin: 'DEFAULT' } } } });
+        case 'POST /v1/policy': {
+          seen.policy = JSON.parse(body);
+          if (policies.some(row => row.origin === 'CUSTOM')) return json(409, { message: 'active custom policy exists' });
+          const { per_tx, daily, weekly, monthly } = seen.policy.params;
+          policies = [{ policy_type: 'STABLECOIN_TRANSFER', rule_type: 'TRANSFER_LIMIT', blockchain: 'BASE', per_tx_limit: per_tx, daily_limit: daily, weekly_limit: weekly, monthly_limit: monthly, origin: 'CUSTOM', policy_id: 'p-1' }];
+          return json(200, { data: { id: 'p-1' } });
+        }
+        case 'DELETE /v1/policy/p-1':
+          if (!policies.some(row => row.origin === 'CUSTOM')) return json(404, { message: 'gone' });
+          policies = [DEFAULT_LIMIT];
+          return new Response(null, { status: 204 });
+        default: return json(404, { message: `no route ${method} ${path}` });
+      }
+    }
     expect(headers.get('user-agent')).toBeNull(); // the runtime's own User-Agent goes out: the library never claims to be the CLI
     if (path.startsWith('/v1/w3s/sdk/')) {
       expect(headers.get('x-app-id')).toBe('app-1');
@@ -101,7 +134,7 @@ export function fakeCircle(network: Network = 'arc', options: { operation?: 'log
         const { factorSubmissions: [{ requiredFactorIndex, emailOtpProof }] } = unaes(device.key, body);
         if (requiredFactorIndex !== 0 || emailOtpProof.code !== `${HEAD}-${CODE}` || emailOtpProof.otpToken !== otpToken || emailOtpProof.destination !== EMAIL)
           return json(400, { code: 155112, message: 'OTP value is not matched' });
-        return json(200, { data: { encrypt: aes(device.key, { state: 'COMPLETED', userToken: user.token, encryptionKey: user.key, userSecret: SECRET,
+        return json(200, { data: { encrypt: aes(device.key, { state: 'COMPLETED', userToken: owner ? OWNER_TOKEN : user.token, encryptionKey: user.key, userSecret: SECRET,
           storageKey: randomBytes(32).toString('base64') }) } });
       }
       case 'GET /v1/w3s/auth/challenges/auth-1':

@@ -1,9 +1,9 @@
 import forge from 'node-forge';
 import { decodePaymentSignatureHeader, encodePaymentRequiredHeader, encodePaymentResponseHeader } from '@x402/core/http';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { payOnce, type Terms } from '../examples/expo-app/x402.js';
 import { AgentWalletError, createAgentWallet, isExpired, keychainStorage, memoryStorage, searchServices, type Network, type Session, type Storage } from '../src/index.js';
-import { ARC_USDC, BASE_USDC, CODE, EMAIL, HEAD, MINED, SECRET, SHARE, SIGNATURE, WALLETS, fakeCircle, sha256, unwrapPinhash, user } from './fake-circle.js';
+import { ARC_USDC, BASE_USDC, CODE, EMAIL, HEAD, MINED, OWNER_TOKEN, SECRET, SHARE, SIGNATURE, WALLETS, fakeCircle, sha256, unwrapPinhash, user } from './fake-circle.js';
 
 const KEY = { arc: 'circle-agent-wallet.arc', base: 'circle-agent-wallet.base' } as const;
 const code = (error: unknown) => (error instanceof AgentWalletError ? error.code : `not an AgentWalletError: ${String(error)}`);
@@ -273,6 +273,67 @@ describe('searchServices', () => {
     expect(code(await searchServices({}, (async () => new Response('{"items":null}')) as typeof fetch).catch(e => e))).toBe('protocol');
     expect(code(await searchServices({}, (async () => new Response('no', { status: 503 })) as typeof fetch).catch(e => e))).toBe('http');
   });
+});
+
+describe('limits', () => {
+  const CAP = { perTx: '0.005', daily: '0.01', weekly: '0.05', monthly: '0.1' };
+  const custom = { policyType: 'STABLECOIN_TRANSFER', ruleType: 'TRANSFER_LIMIT', blockchain: 'BASE', ...CAP, addresses: [], origin: 'CUSTOM', id: 'p-1' };
+  const byDefault = { policyType: 'STABLECOIN_TRANSFER', ruleType: 'TRANSFER_LIMIT', blockchain: null, perTx: null, daily: null, weekly: null, monthly: '100', addresses: [], origin: 'DEFAULT', id: null };
+  it("reads Circle's limits and what is left of them with the agent's own session, an empty limit meaning none", async () => {
+    const { wallet } = await loggedIn('base', { customLimit: true });
+    expect(await wallet.limits.read()).toEqual([custom]);
+    expect(await wallet.limits.budget()).toEqual([{ policyType: 'STABLECOIN_TRANSFER', perTx: null, daily: null, dailyRemaining: null, weekly: null, weeklyRemaining: null,
+      monthly: '100', monthlyRemaining: '99.97', origin: 'DEFAULT' }]);
+  });
+  it('says limits exist on mainnet only, without calling Circle', async () => {
+    const { wallet, circle } = await loggedIn('arc');
+    for (const ask of [() => wallet.limits.read(), () => wallet.limits.budget(), () => wallet.limits.owner.start(EMAIL), () => wallet.limits.set(CAP), () => wallet.limits.reset()])
+      expect(code(await ask().catch(e => e))).toBe('invalid_input');
+    expect(circle.calls).toEqual([]);
+  });
+  it('changes nothing without an owner login, which the agent session cannot stand in for', async () => {
+    const { wallet, circle } = await loggedIn('base');
+    expect(code(await wallet.limits.set(CAP).catch(e => e))).toBe('not_logged_in');
+    expect(code(await wallet.limits.reset().catch(e => e))).toBe('not_logged_in');
+    expect(circle.calls).toEqual([]);
+  });
+  it("sets a limit with the owner's token from a second emailed code, refuses to replace one, and resets to Circle's default", async () => {
+    const { wallet, circle, storage } = await loggedIn('base');
+    expect(await wallet.limits.owner.start(EMAIL)).toEqual({ codePrefix: HEAD });
+    await wallet.limits.owner.finish(CODE);
+    // The owner login creates no wallets, looks none up, and leaves the stored agent session as it was.
+    expect(circle.calls.every(call => call.startsWith('owner ') && !/initialize|wallets/.test(call))).toBe(true);
+    expect(await storage.get(KEY.base)).toBe(saved.base);
+    expect(await storage.get(KEY.base)).not.toContain(OWNER_TOKEN);
+
+    await wallet.limits.set(CAP);
+    expect(circle.seen.policy).toEqual({ wallet_id: 'w-base', blockchain: 'BASE', policy_type: 'STABLECOIN_TRANSFER', rule_type: 'TRANSFER_LIMIT',
+      params: { per_tx: '0.005', daily: '0.01', weekly: '0.05', monthly: '0.1' } });
+    expect(await wallet.limits.read()).toEqual([custom]);
+    const again = await wallet.limits.set({ ...CAP, monthly: '1' }).catch(e => e);
+    expect(code(again)).toBe('invalid_input');
+    expect(again.message).toContain('limits.reset()');
+    expect(await wallet.limits.read()).toEqual([custom]);
+    await wallet.limits.reset();
+    expect(await wallet.limits.read()).toEqual([byDefault]);
+    await wallet.limits.reset(); // nothing custom left: nothing to delete
+  }, 120_000);
+  it.each([{ ...CAP, daily: '0.001' }, { ...CAP, perTx: '1e-3' }, { ...CAP, monthly: '' }])('refuses limits that are not decimals in rising order, before asking Circle: %o', async bad => {
+    const { wallet, circle } = await loggedIn('base');
+    expect(code(await wallet.limits.set(bad).catch(e => e))).toBe('invalid_input');
+    expect(circle.calls).toEqual([]);
+  });
+  it('forgets the owner login after ten minutes, and at logout', async () => {
+    const { wallet, circle } = await loggedIn('base');
+    await wallet.limits.owner.start(EMAIL); await wallet.limits.owner.finish(CODE);
+    delete circle.seen.deviceId; // a new login is a new device to Circle
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 10 * 60_000 + 1);
+    try { expect(code(await wallet.limits.set(CAP).catch(e => e))).toBe('not_logged_in'); } finally { clock.mockRestore(); }
+    await wallet.limits.owner.start(EMAIL); await wallet.limits.owner.finish(CODE);
+    await wallet.logout();
+    expect(code(await wallet.limits.set(CAP).catch(e => e))).toBe('not_logged_in');
+  }, 120_000);
 });
 
 describe('logout', () => {
