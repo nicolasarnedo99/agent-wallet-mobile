@@ -120,7 +120,7 @@ async function request(f: Fetch, on: Target, method: Method, path: string, heade
   let json: any = {};
   try { json = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
   if (!response.ok) throw new AgentWalletError('http', `Circle ${method} ${path.split('?')[0]} answered ${response.status}${typeof json?.code === 'number' ? ` (code ${json.code})` : ''}${
-    !on.quiet && typeof json?.message === 'string' ? `: ${json.message.slice(0, 120)}` : ''}`, response.status);
+    !on.quiet && typeof (json?.message ?? json?.error) === 'string' ? `: ${String(json.message ?? json.error).slice(0, 120)}` : ''}`, response.status);
   return json ?? {};
 }
 async function plain(f: Fetch, on: Target, method: Method, path: string, token?: string, body?: unknown, headers: Record<string, string> = {}): Promise<any> {
@@ -483,7 +483,6 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
         if (!owner || Date.now() >= owner.until) { owner = null; throw new AgentWalletError('not_logged_in', 'Changing limits needs the owner login: limits.owner.start, then limits.owner.finish'); }
         return owner.token;
       };
-      const POLICY_TYPES = { stablecoin: 'STABLECOIN_TRANSFER', contract: 'CONTRACT_INTERACTION' } as const;
       const write = (s: Session, policy_type: string, rule_type: string, params: object) =>
         plain(f, policy, 'POST', '/v1/policy', ownerToken(), { wallet_id: s.walletId, blockchain: NETWORKS[network].blockchain, policy_type, rule_type, params }).catch(error => {
           throw error instanceof AgentWalletError && error.status === 409 ? new AgentWalletError('invalid_input', 'A custom rule of this kind is already set: call limits.reset() first', 409) : error;
@@ -520,24 +519,24 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
             ownerPending = null;
           },
         },
-        // A cap per payment, day, week and month from this wallet on this chain, each at least the one before: on stablecoin
-        // transfers, or with 'contract' on contract calls. It does not replace a custom limit of the same kind: Circle refuses, and
-        // so does this, until reset() has removed the old one.
-        async set(limit: { perTx: string; daily: string; weekly: string; monthly: string }, kind: 'stablecoin' | 'contract' = 'stablecoin'): Promise<void> {
+        // A cap per payment, day, week and month on stablecoin transfers from this wallet on this chain, each at least the one
+        // before. It does not replace a custom limit: Circle refuses, and so does this, until reset() has removed the old one.
+        // (The CLI also offers this cap for contract calls; Circle answered that request with a bare 400, so it is not offered here.)
+        async set(limit: { perTx: string; daily: string; weekly: string; monthly: string }): Promise<void> {
           mainnet(); const s = await live();
           const amounts = [limit.perTx, limit.daily, limit.weekly, limit.monthly];
           if (amounts.some(amount => typeof amount !== 'string' || !/^\d+(\.\d+)?$/.test(amount)) || amounts.some((amount, i) => i > 0 && Number(amount) < Number(amounts[i - 1])))
             throw new AgentWalletError('invalid_input', 'Limits are decimals with perTx ≤ daily ≤ weekly ≤ monthly');
-          await write(s, POLICY_TYPES[kind], 'TRANSFER_LIMIT', { per_tx: limit.perTx, daily: limit.daily, weekly: limit.weekly, monthly: limit.monthly });
+          await write(s, 'STABLECOIN_TRANSFER', 'TRANSFER_LIMIT', { per_tx: limit.perTx, daily: limit.daily, weekly: limit.weekly, monthly: limit.monthly });
         },
         // The only contracts the wallet may call or addresses it may pay (an allowlist), or ones it never may (a blocklist). A
-        // contract list always governs contract calls; a recipient list governs stablecoin transfers unless `kind` says 'contract'.
-        // One list of each kind at a time: reset(id) the old one first.
-        async setList(rule: 'contract-allowlist' | 'contract-blocklist' | 'recipient-allowlist' | 'recipient-blocklist', addresses: string[], kind: 'stablecoin' | 'contract' = 'stablecoin'): Promise<void> {
+        // contract list governs contract calls and a recipient list stablecoin transfers. One list of each kind at a time:
+        // reset(id) the old one first.
+        async setList(rule: 'contract-allowlist' | 'contract-blocklist' | 'recipient-allowlist' | 'recipient-blocklist', addresses: string[]): Promise<void> {
           mainnet(); const s = await live();
           if (!Array.isArray(addresses) || !addresses.length || addresses.some(address => !/^0x[0-9a-fA-F]{40}$/.test(String(address))))
             throw new AgentWalletError('invalid_input', 'The list is one or more 0x addresses');
-          await write(s, rule.startsWith('contract') ? POLICY_TYPES.contract : POLICY_TYPES[kind], rule.toUpperCase().replace('-', '_'),
+          await write(s, rule.startsWith('contract') ? 'CONTRACT_INTERACTION' : 'STABLECOIN_TRANSFER', rule.toUpperCase().replace('-', '_'),
             { addresses: [...new Set(addresses.map(address => address.toLowerCase()))] });
         },
         // Removes the owner's custom rules on this chain, or the one with this id (from read()). With none left, Circle's default applies.

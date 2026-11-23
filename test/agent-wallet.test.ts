@@ -334,11 +334,10 @@ describe('limits', () => {
     expect(code(await wallet.limits.set(bad).catch(e => e))).toBe('invalid_input');
     expect(circle.calls).toEqual([]);
   });
-  it('caps contract calls with their own limit, and restricts contracts and recipients with lists, each removable alone', async () => {
+  it('restricts contracts and recipients with lists, each removable alone', async () => {
     const { wallet, circle } = await loggedIn('base');
     await wallet.limits.owner.start(EMAIL); await wallet.limits.owner.finish(CODE);
-    await wallet.limits.set(CAP, 'contract');
-    expect(circle.seen.policy).toMatchObject({ policy_type: 'CONTRACT_INTERACTION', rule_type: 'TRANSFER_LIMIT', params: { per_tx: '0.005' } });
+    await wallet.limits.set(CAP);
     const SELLER = '0xF46F48677E11aae0f3354aa69b2fa10c8fd8dbe8';
     await wallet.limits.setList('contract-allowlist', [SELLER, SELLER.toLowerCase(), BASE_USDC]);
     expect(circle.seen.policy).toEqual({ wallet_id: 'w-base', blockchain: 'BASE', policy_type: 'CONTRACT_INTERACTION', rule_type: 'CONTRACT_ALLOWLIST',
