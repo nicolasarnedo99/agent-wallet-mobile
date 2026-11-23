@@ -1,0 +1,13 @@
+{
+  "expo": {
+    "name": "Agent Wallet Example",
+    "slug": "agent-wallet-mobile-example",
+    "version": "0.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "dev.nicolasarnedo.agentwalletexample"
+    }
+  }
+}

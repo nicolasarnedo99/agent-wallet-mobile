@@ -5,3 +5,9 @@ dist/
 *.tsbuildinfo
 .DS_Store
 smoke-result.json
+examples/expo-app/ios/
+examples/expo-app/android/
+.expo/
+*.tgz
+examples/expo-app/build/
+examples/expo-app/package-lock.json
