@@ -32,10 +32,15 @@ describe('login key', () => {
     const util = forge.util as unknown as { setImmediate(callback: () => void): void }; // in forge, missing from its types
     const original = util.setImmediate;
     util.setImmediate = callback => queueMicrotask(callback);
+    const rsa = forge.pki.rsa as unknown as { stepKeyPairGenerationState(state: object, ms: number): boolean };
+    const step = rsa.stepKeyPairGenerationState;
+    let slices = 0;
+    rsa.stepKeyPairGenerationState = (state, ms) => { slices++; return step(state, ms); };
     let ticks = 0;
     const timer = setInterval(() => { ticks++; }, 1);
-    try { await fresh().wallet.login.prepare(); } finally { clearInterval(timer); util.setImmediate = original; }
+    try { await fresh().wallet.login.prepare(); } finally { clearInterval(timer); util.setImmediate = original; rsa.stepKeyPairGenerationState = step; }
     expect(ticks).toBeGreaterThan(0);
+    expect(ticks).toBeGreaterThanOrEqual(slices - 1); // a timer got its turn after every 50 ms slice, not only once at the start
   }, 120_000);
   it('makes a new key for each login attempt, and uses the prepared one', async () => {
     const { wallet, circle } = fresh();
