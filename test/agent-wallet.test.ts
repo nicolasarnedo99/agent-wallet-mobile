@@ -416,6 +416,11 @@ describe('paying an x402 resource', () => {
     expect(circle.seen.typedData).toMatchObject({ primaryType: 'TransferWithAuthorization', domain: { name: 'USDC', version: '2', chainId: 5042002, verifyingContract: ARC_USDC },
       message: { to: PAY_TO, value: '10000' } });
   });
+  it("passes Circle's spending-limit refusal through as it is, so an app can tell it from its own", async () => {
+    const { wallet } = await loggedIn('arc', { overLimit: true }); const s = seller();
+    expect(code(await payOnce(s.url, await wallet.x402Signer(), terms, s.fetch).catch(e => e))).toBe('limit_exceeded');
+    expect(s.paid).toHaveLength(0);
+  });
   // Payee and network are the app's own check; an amount over the cap is refused by the x402 client's spend controls, earlier still.
   it.each([
     ['payee', { ...terms, payTo: '0x2222222222222222222222222222222222222222' }, 'Refused to pay: payTo'],

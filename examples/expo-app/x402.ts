@@ -41,8 +41,9 @@ export async function payOnce(url: string, signer: X402Signer, terms: Terms, doF
     const required = http.getPaymentRequiredResponse(name => response.headers.get(name), body);
     let payload;
     try { payload = await client.createPaymentPayload(required); } catch (error) {
-      // The client's own spend controls refuse before the hook runs; either way nothing was signed.
-      throw refusal ?? new Error(`Refused to pay: ${(error as Error).message}`);
+      // The client's own spend controls refuse before the hook runs; either way nothing was signed. The wallet's own errors
+      // (Circle's spending limit, an expired session) pass through with their code.
+      throw refusal ?? ((error as Error).name === 'AgentWalletError' ? error : new Error(`Refused to pay: ${(error as Error).message}`));
     }
     response = await doFetch(url, { headers: http.encodePaymentSignatureHeader(payload) });
   }
