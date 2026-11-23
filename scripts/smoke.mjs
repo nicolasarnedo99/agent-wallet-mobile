@@ -4,6 +4,7 @@
 //   npm run smoke            # the payment
 //   npm run smoke -- --call  # the payment, then a zero USDC approve through call() and transaction()
 //   npm run smoke -- --fund --transfer   # also ask the faucet for USDC, and transfer 0.01 USDC to the payee
+//   npm run smoke -- --base --lists --no-pay    # an allowlist of one contract, a refused call, an allowed one, a cap on contract calls; spends nothing
 //   npm run smoke -- --base --deploy --no-pay   # a first mainnet login with a never-used email: creates and deploys the wallet, spends nothing
 //   npm run smoke -- --fund --deploy     # for a brand-new wallet: faucet first, then the transaction that deploys it, then the payment
 //   npm run smoke -- --base --call --transfer --limits   # Base mainnet, REAL USDC: the payment costs 0.01, the transfer goes to
@@ -47,7 +48,7 @@ export async function onChain(hash, eventName, matches) {
 async function main() {
   if (!RESOURCE || !/^0x[0-9a-fA-F]{40}$/.test(PAYEE ?? '')) throw new Error('Set the seller URL and its payee in .env.local (see the top of this file)');
   if (BASE && process.argv.includes('--fund')) throw new Error('There is no faucet on mainnet');
-  if (!BASE && process.argv.includes('--limits')) throw new Error('Limits exist on mainnet only: add --base');
+  if (!BASE && (process.argv.includes('--limits') || process.argv.includes('--lists'))) throw new Error('Limits exist on mainnet only: add --base');
   if (BASE) console.log(process.argv.includes('--no-pay') ? 'BASE MAINNET: no payment in this run.' : 'BASE MAINNET: this run spends 0.01 real USDC.');
   const withCall = process.argv.includes('--call');
   const result = { package: 'dist/ built from this checkout', network: NET, ranAt: new Date().toISOString() };
@@ -138,6 +139,37 @@ async function main() {
         result.limits.after = await agent.limits.read();
         console.log(`limits   after reset: ${JSON.stringify(result.limits.after)}`);
         if (custom(result.limits.after).length) console.error(`A CUSTOM LIMIT IS STILL SET. Run: circle wallet limit reset --address ${wallet.address} --chain BASE`);
+      }
+    }
+    if (process.argv.includes('--lists')) {
+      // An allowlist of one contract (USDC): a call to another contract should be refused by Circle, a call to USDC should go
+      // through. Then a cap on contract calls, set and read back. Every call here is a zero approve: nothing is spent.
+      const OTHER = '0x4200000000000000000000000000000000000006'; // WETH on Base
+      const custom = rows => rows.filter(row => row.origin === 'CUSTOM');
+      if (custom(await agent.limits.read()).length) throw new Error('A custom rule is already set and this test would remove it: reset it yourself first');
+      await agent.limits.owner.start(await ask('Owner login for changing rules. The same email again (typing is hidden): '));
+      await agent.limits.owner.finish(await ask('The owner code (typing is hidden): '));
+      result.lists = {};
+      try {
+        await agent.limits.setList('contract-allowlist', [USDC]);
+        result.lists.set = custom(await agent.limits.read());
+        console.log(`lists    set: ${JSON.stringify(result.lists.set)}`);
+        const zeroApprove = encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [wallet.address, 0n] });
+        result.lists.other = await agent.call({ to: OTHER, data: zeroApprove }).then(sent => `NOT REFUSED: ${sent.hash}`, error => `${error.code}: ${error.message}`);
+        console.log(`lists    a call to a contract off the allowlist: ${result.lists.other}`);
+        const allowed = await agent.deploy();
+        await onChain(allowed.hash, 'Approval', args => same(args.owner, wallet.address) && same(args.spender, wallet.address) && args.value === 0n);
+        result.lists.allowed = allowed.hash;
+        console.log(`lists    a call to the allowed contract: ok ${allowed.hash}`);
+        await agent.limits.reset();
+        await agent.limits.set({ perTx: '0.005', daily: '0.01', weekly: '0.05', monthly: '0.1' }, 'contract');
+        result.lists.contractCap = custom(await agent.limits.read());
+        console.log(`lists    cap on contract calls: ${JSON.stringify(result.lists.contractCap)}`);
+      } finally {
+        await agent.limits.reset().catch(error => console.error(`RULES NOT RESET (${error.message}). Run: circle wallet limit reset --address ${wallet.address} --chain BASE`));
+        result.lists.after = await agent.limits.read();
+        console.log(`lists    after reset: ${JSON.stringify(result.lists.after)}`);
+        if (custom(result.lists.after).length) console.error(`A CUSTOM RULE IS STILL SET. Run: circle wallet limit reset --address ${wallet.address} --chain BASE`);
       }
     }
     result.balanceAfter = await agent.balance();
