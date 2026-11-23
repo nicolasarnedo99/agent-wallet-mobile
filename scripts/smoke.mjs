@@ -3,6 +3,7 @@
 //
 //   npm run smoke            # the payment
 //   npm run smoke -- --call  # the payment, then a zero USDC approve through call() and transaction()
+//   npm run smoke -- --fund --transfer   # also ask the faucet for USDC, and transfer 0.01 USDC to the payee
 //
 // SMOKE_URL is the x402 resource to pay and SMOKE_PAY_TO the address it is paid at; put both in .env.local, which git ignores.
 // The email and the code are typed with echo off, go to the library and nowhere else. The session stays in this process's
@@ -73,6 +74,19 @@ async function main() {
       result.call = { hash: sent.hash, block: callBlock, transactionId: sent.transactionId, state: status.state };
       console.log(`call     ok: ${sent.hash} (block ${callBlock}, approve 0 USDC), Circle transaction ${sent.transactionId} is ${status.state}`);
       if (status.hash !== sent.hash) throw new Error(`transaction() reports hash ${status.hash}, call() returned ${sent.hash}`);
+    }
+    if (process.argv.includes('--fund')) {
+      await agent.fund();
+      let now = result.balanceBefore;
+      for (let i = 0; i < 30 && Number(now) <= Number(result.balanceBefore) - 0.02; i++) { await new Promise(done => setTimeout(done, 2000)); now = await agent.balance(); }
+      result.fund = Number(now) > Number(result.balanceBefore) - 0.02 ? `arrived: balance ${now}` : 'accepted by Circle, nothing arrived within a minute';
+      console.log(`fund     ${result.fund}`);
+    }
+    if (process.argv.includes('--transfer')) {
+      const moved = await agent.transfer({ to: PAYEE, amount: '0.01' });
+      const transferBlock = await onChain(moved.hash, 'Transfer', args => same(args.from, wallet.address) && same(args.to, PAYEE) && args.value === 10_000n);
+      result.transfer = { hash: moved.hash, block: transferBlock, transactionId: moved.transactionId };
+      console.log(`transfer ok: ${moved.hash} (block ${transferBlock}, 0.01 USDC from the wallet to ${PAYEE})`);
     }
     result.balanceAfter = await agent.balance();
     console.log(`balance  ${result.balanceAfter} USDC`);
