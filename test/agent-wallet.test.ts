@@ -218,6 +218,14 @@ describe('call', () => {
     await expect(wallet.deploy()).resolves.toEqual({ hash: MINED, transactionId: 't-9' });
     expect(circle.seen.execution).toMatchObject({ contractAddress: ARC_USDC, callData: `0x095ea7b3${'0'.repeat(24)}${WALLETS.arc.address.slice(2)}${'0'.repeat(64)}` });
   });
+  // Seen on Base mainnet on 24 Nov 2026, with an allowlist of one other contract.
+  it("names Circle's refusal when the contract is not on the owner's allowlist, and opens no challenge", async () => {
+    const { wallet, circle } = await loggedIn('arc', { offList: true });
+    const error = await wallet.call({ to: SELLER, data: '0xabcdef' }).catch(e => e);
+    expect(code(error)).toBe('not_allowed');
+    expect(error.message).toContain('not on the allowlist');
+    expect(circle.calls).toEqual(['POST /v1/w3s/user/transactions/contractExecution']);
+  });
   it("throws Circle's reason when the transaction fails, with its id, so nothing reads as done", async () => {
     const { wallet } = await loggedIn('arc', { transaction: { state: 'FAILED', errorReason: 'EXECUTION_REVERTED', txHash: MINED } });
     const failure = await wallet.call({ to: SELLER, data: '0xabcdef' }).catch(e => e);

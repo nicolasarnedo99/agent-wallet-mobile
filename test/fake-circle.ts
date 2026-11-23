@@ -56,7 +56,7 @@ export function unwrapPinhash(encrypted: string): string {
   return unaes(key.toString('base64'), pinhash_struct).pinhash;
 }
 
-export function fakeCircle(network: Network = 'arc', options: { operation?: 'login' | 'bootstrap'; transaction?: object; deactivate?: number; overLimit?: boolean; initialize?: 409 | 'FAILED'; customLimit?: boolean } = {}) {
+export function fakeCircle(network: Network = 'arc', options: { operation?: 'login' | 'bootstrap'; transaction?: object; deactivate?: number; overLimit?: boolean; offList?: boolean; initialize?: 409 | 'FAILED'; customLimit?: boolean } = {}) {
   const { transaction = { state: 'CONFIRMED', txHash: MINED }, deactivate = 204 } = options;
   const DEFAULT_LIMIT: any = { policy_type: 'STABLECOIN_TRANSFER', rule_type: 'TRANSFER_LIMIT', per_tx_limit: '', daily_limit: '', weekly_limit: '', monthly_limit: '100', origin: 'DEFAULT' };
   let made = options.customLimit ? 1 : 0;
@@ -164,6 +164,7 @@ export function fakeCircle(network: Network = 'arc', options: { operation?: 'log
       }
       case 'POST /v1/w3s/user/transactions/contractExecution':
         asUser(); seen.execution = JSON.parse(body);
+        if (options.offList) return json(400, { code: 136005, message: 'Contract address is not on the allowlist.' });
         return json(200, { data: { challengeId: 'tx-1' } });
       case 'POST /v1/w3s/user/transactions/transfer':
         asUser(); seen.transfer = JSON.parse(body);

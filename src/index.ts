@@ -42,7 +42,7 @@ export type Budget = { policyType: string; perTx: string | null; daily: string |
   monthly: string | null; monthlyRemaining: string | null; origin: string };
 export type Storage = { get(key: string): Promise<string | null>; set(key: string, value: string): Promise<void>; remove(key: string): Promise<void> };
 
-export type ErrorCode = 'not_logged_in' | 'session_expired' | 'wrong_code' | 'invalid_input' | 'http' | 'protocol' | 'transaction_failed' | 'limit_exceeded';
+export type ErrorCode = 'not_logged_in' | 'session_expired' | 'wrong_code' | 'invalid_input' | 'http' | 'protocol' | 'transaction_failed' | 'limit_exceeded' | 'not_allowed';
 export class AgentWalletError extends Error {
   // `status` is Circle's HTTP status, on `http` errors only.
   constructor(readonly code: ErrorCode, message: string, readonly status?: number) { super(message); this.name = 'AgentWalletError'; }
@@ -314,8 +314,10 @@ const status = (id: string, transaction: any): TransactionStatus => ({ id, state
 
 // Circle refuses over-limit spending when the signature or the transaction is asked for, before any challenge exists: seen on
 // Base mainnet as a 400 "spend limit exceeded" (for signing; assumed the same for transactions).
+// An address the owner's lists rule out is refused the same way: seen as a 400 "Contract address is not on the allowlist."
 const limited = <T>(asked: Promise<T>): Promise<T> => asked.catch(error => {
-  throw error instanceof AgentWalletError && error.status === 400 && /spend limit/i.test(error.message) ? new AgentWalletError('limit_exceeded', error.message, 400) : error;
+  const refusal = !(error instanceof AgentWalletError) || error.status !== 400 ? null : /spend limit/i.test(error.message) ? 'limit_exceeded' : /allowlist|blocklist/i.test(error.message) ? 'not_allowed' : null;
+  throw refusal ? new AgentWalletError(refusal, error.message, 400) : error;
 });
 
 // Paid x402 resources listed in Circle's Agent Marketplace. Public: no session, no token. Check a result against your own terms
