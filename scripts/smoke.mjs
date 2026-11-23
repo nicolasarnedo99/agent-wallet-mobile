@@ -4,6 +4,7 @@
 //   npm run smoke            # the payment
 //   npm run smoke -- --call  # the payment, then a zero USDC approve through call() and transaction()
 //   npm run smoke -- --fund --transfer   # also ask the faucet for USDC, and transfer 0.01 USDC to the payee
+//   npm run smoke -- --base --deploy --no-pay   # a first mainnet login with a never-used email: creates and deploys the wallet, spends nothing
 //   npm run smoke -- --fund --deploy     # for a brand-new wallet: faucet first, then the transaction that deploys it, then the payment
 //   npm run smoke -- --base --call --transfer --limits   # Base mainnet, REAL USDC: the payment costs 0.01, the transfer goes to
 //                                                        # the wallet itself, and --limits sets a small cap, sees Circle refuse, resets
@@ -47,7 +48,7 @@ async function main() {
   if (!RESOURCE || !/^0x[0-9a-fA-F]{40}$/.test(PAYEE ?? '')) throw new Error('Set the seller URL and its payee in .env.local (see the top of this file)');
   if (BASE && process.argv.includes('--fund')) throw new Error('There is no faucet on mainnet');
   if (!BASE && process.argv.includes('--limits')) throw new Error('Limits exist on mainnet only: add --base');
-  if (BASE) console.log('BASE MAINNET: this run spends 0.01 real USDC.');
+  if (BASE) console.log(process.argv.includes('--no-pay') ? 'BASE MAINNET: no payment in this run.' : 'BASE MAINNET: this run spends 0.01 real USDC.');
   const withCall = process.argv.includes('--call');
   const result = { package: 'dist/ built from this checkout', network: NET, ranAt: new Date().toISOString() };
   const agent = createAgentWallet({ network: NET });
@@ -85,12 +86,14 @@ async function main() {
       console.log(`deploy   ok: ${deployed.hash} (block ${deployBlock}, the wallet now has code on-chain)`);
     }
 
-    const paid = await payOnce(RESOURCE, await agent.x402Signer(), TERMS);
-    if (!paid.transaction) throw new Error('The seller answered 200 but named no transaction');
-    const block = await onChain(paid.transaction, 'Transfer', args => same(args.from, wallet.address) && same(args.to, PAYEE) && args.value === 10_000n);
-    result.payment = { hash: paid.transaction, block };
-    console.log(`payment  ok: ${paid.transaction} (block ${block}, 0.01 USDC from the wallet to ${PAYEE})`);
-    console.log(`         the seller answered ${JSON.stringify(paid.body).slice(0, 160)}`);
+    if (!process.argv.includes('--no-pay')) {
+      const paid = await payOnce(RESOURCE, await agent.x402Signer(), TERMS);
+      if (!paid.transaction) throw new Error('The seller answered 200 but named no transaction');
+      const block = await onChain(paid.transaction, 'Transfer', args => same(args.from, wallet.address) && same(args.to, PAYEE) && args.value === 10_000n);
+      result.payment = { hash: paid.transaction, block };
+      console.log(`payment  ok: ${paid.transaction} (block ${block}, 0.01 USDC from the wallet to ${PAYEE})`);
+      console.log(`         the seller answered ${JSON.stringify(paid.body).slice(0, 160)}`);
+    }
 
     if (withCall) {
       const data = encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [PAYEE, 0n] });
