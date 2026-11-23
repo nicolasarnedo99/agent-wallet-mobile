@@ -8,7 +8,11 @@ The code is lifted out of Nest, an iPhone app where it paid for x402 resources f
 
 ## Quick start
 
-It is not on npm. Install it from a checkout (`npm install ../agent-wallet-mobile` after `npm run build`), together with `viem`, and in React Native `react-native-keychain` and `react-native-get-random-values`.
+```
+npm install agent-wallet-mobile viem
+```
+
+In React Native, add `react-native-keychain` and `react-native-get-random-values` as well.
 
 ```ts
 import 'react-native-get-random-values';
