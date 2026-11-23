@@ -382,13 +382,13 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
       return status(id, (await plain(f, s, 'GET', `/v1/w3s/transactions/${encodeURIComponent(id)}`, s.userToken)).transaction);
     },
     // Revokes the session at Circle ('local': this session; 'all': every device's, for a lost phone), then removes it from storage.
-    // If Circle does not confirm, this throws and the session stays, so it can be retried; a session Circle already refuses (401)
-    // or one past its expiry is just removed.
+    // If Circle does not confirm, this throws and the session stays, so it can be retried; a session Circle already refuses (401,
+    // or the 403 it answered a revoked session on Arc testnet) or one past its expiry is just removed.
     async logout(scope: 'local' | 'all' = 'local'): Promise<void> {
       const s = await session();
       if (s && !isExpired(s)) {
         try { await plain(f, s, 'POST', '/v1/w3s/users/token/deactivate', s.userToken, { idempotencyKey: uuid(), scope }); }
-        catch (error) { if (!(error instanceof AgentWalletError && error.status === 401)) throw error; }
+        catch (error) { if (!(error instanceof AgentWalletError && (error.status === 401 || error.status === 403))) throw error; }
       }
       await storage.remove(key);
     },

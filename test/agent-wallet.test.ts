@@ -213,10 +213,13 @@ describe('logout', () => {
     await wallet.forget();
     expect(await storage.get(KEY.arc)).toBeNull();
   });
-  it('removes a session Circle no longer accepts, and an expired one without calling Circle', async () => {
-    const refused = await loggedIn('arc', { deactivate: 401 });
-    await refused.wallet.logout();
-    expect(await refused.storage.get(KEY.arc)).toBeNull();
+  // 403 is what Circle answered a revoked session on Arc testnet (23 Nov 2026, the balance call); 401 is the usual answer to a bad token.
+  it('removes a session Circle no longer accepts (401 or 403), and an expired one without calling Circle', async () => {
+    for (const status of [401, 403]) {
+      const refused = await loggedIn('arc', { deactivate: status });
+      await refused.wallet.logout();
+      expect(await refused.storage.get(KEY.arc)).toBeNull();
+    }
     const expired = await loggedIn('arc', undefined, JSON.stringify({ ...JSON.parse(saved.arc), expiresAt: 1 }));
     await expired.wallet.logout();
     expect(expired.circle.calls).toEqual([]);
