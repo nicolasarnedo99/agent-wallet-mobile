@@ -53,7 +53,7 @@ export function unwrapPinhash(encrypted: string): string {
   return unaes(key.toString('base64'), pinhash_struct).pinhash;
 }
 
-export function fakeCircle(network: Network = 'arc', options: { operation?: 'login' | 'bootstrap'; transaction?: object; deactivate?: number } = {}) {
+export function fakeCircle(network: Network = 'arc', options: { operation?: 'login' | 'bootstrap'; transaction?: object; deactivate?: number; overLimit?: boolean } = {}) {
   const { operation = 'login', transaction = { state: 'CONFIRMED', txHash: MINED }, deactivate = 204 } = options;
   const proxy = NETWORKS[network].proxy;
   const wallet = WALLETS[network];
@@ -119,6 +119,7 @@ export function fakeCircle(network: Network = 'arc', options: { operation?: 'log
         asUser(); const { walletId, data } = JSON.parse(body);
         expect(walletId).toBe(wallet.id);
         seen.typedData = JSON.parse(data);
+        if (options.overLimit) return json(400, { message: 'spend limit exceeded' });
         return json(200, { data: { challengeId: 'sig-1' } });
       }
       case 'POST /v1/w3s/user/transactions/contractExecution':

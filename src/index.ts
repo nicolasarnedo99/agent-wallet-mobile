@@ -31,7 +31,7 @@ export type X402Signer = { readonly address: Hex; signTypedData(data: TypedData)
 export type TransactionStatus = { id: string; state: string; hash: Hex | null; errorReason: string | null };
 export type Storage = { get(key: string): Promise<string | null>; set(key: string, value: string): Promise<void>; remove(key: string): Promise<void> };
 
-export type ErrorCode = 'not_logged_in' | 'session_expired' | 'needs_cli_bootstrap' | 'wrong_code' | 'invalid_input' | 'http' | 'protocol' | 'transaction_failed';
+export type ErrorCode = 'not_logged_in' | 'session_expired' | 'needs_cli_bootstrap' | 'wrong_code' | 'invalid_input' | 'http' | 'protocol' | 'transaction_failed' | 'limit_exceeded';
 export class AgentWalletError extends Error {
   // `status` is Circle's HTTP status, on `http` errors only.
   constructor(readonly code: ErrorCode, message: string, readonly status?: number) { super(message); this.name = 'AgentWalletError'; }
@@ -310,7 +310,10 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
     if (!primaryType) throw new AgentWalletError('invalid_input', 'Circle signs only typed data that names its primary type');
     const data = JSON.stringify({ types: { EIP712Domain: getTypesForEIP712Domain({ domain: domain as never }), ...types }, primaryType, domain, message },
       (_key, value) => (typeof value === 'bigint' ? value.toString() : value));
-    const { challengeId } = await plain(f, s, 'POST', '/v1/w3s/user/sign/typedData', s.userToken, { walletId: s.walletId, data });
+    // Circle checks the wallet's spending limits here, before any challenge exists: seen on Base mainnet as a 400 "spend limit exceeded".
+    const { challengeId } = await plain(f, s, 'POST', '/v1/w3s/user/sign/typedData', s.userToken, { walletId: s.walletId, data }).catch(error => {
+      throw error instanceof AgentWalletError && error.status === 400 && /spend limit/i.test(error.message) ? new AgentWalletError('limit_exceeded', error.message, 400) : error;
+    });
     if (typeof challengeId !== 'string') throw broken('Circle sent no signing challenge');
     const signature = (await approve(f, s, challengeId))?.data?.signature;
     if (typeof signature !== 'string' || !/^0x[0-9a-fA-F]+$/.test(signature)) throw broken('Circle approved but sent no signature');

@@ -37,7 +37,7 @@ await agent.logout();                 // revoke this session at Circle; logout('
 
 On the next launch, `createAgentWallet` with the same storage finds the session again: `agent.wallet()` answers without a network call, and throws an `AgentWalletError` with code `not_logged_in` or `session_expired` when there is nothing to use. `agent.session()` returns the stored session itself, and `isExpired(session)` says whether it is past its expiry.
 
-Every failure is an `AgentWalletError` with a `code`: `not_logged_in`, `session_expired`, `needs_cli_bootstrap`, `wrong_code`, `invalid_input`, `http` (with Circle's `status`), `protocol` (Circle answered with something this client does not understand) or `transaction_failed`.
+Every failure is an `AgentWalletError` with a `code`: `not_logged_in`, `session_expired`, `needs_cli_bootstrap`, `wrong_code`, `invalid_input`, `http` (with Circle's `status`), `protocol` (Circle answered with something this client does not understand), `transaction_failed` or `limit_exceeded` (Circle refused to sign because of the wallet's spending limit).
 
 [`examples/expo-app`](examples/expo-app) has a one-screen app (log in, balance, pay one x402 resource). It builds and installs on an iPhone, and has not yet logged in or paid from one. Its payment helper, `x402.ts`, is the part the tests and the smoke script exercise.
 
@@ -49,7 +49,7 @@ That makes the session a bearer credential. It is five values (`userToken`, `enc
 
 The library never stores, logs or returns the email or the code. The email lives in memory between `login.start` and `login.finish`; the code goes into one encrypted request. Errors carry Circle's HTTP status and numeric code, and Circle's own message only outside a login, where it could echo either.
 
-Circle signs whatever typed data a valid session sends, and I found no spending limit applied on testnet. Whatever limit you want has to run in your app before `signTypedData` is called. `examples/expo-app/x402.ts` shows the shape: the 402's scheme, network, token, amount and payee are checked against what the app expects, and a 402 that fails sends nothing to Circle. The tests cover that refusal.
+On testnet Circle signs whatever typed data a valid session sends: its spending limits exist on mainnet only. There they do cover x402 payments. On Base mainnet, with a limit of 0.005 USDC per payment set through the CLI, Circle refused to sign a 0.01 USDC payment (a 400, "spend limit exceeded"), opened no challenge and moved no funds. That test was run from the Nest app's side on 24 Nov 2026, not from this package, which only maps the refusal to `limit_exceeded`. Setting limits is not in this client, so whatever limit you want on testnet, or beyond Circle's, has to run in your app before `signTypedData` is called. `examples/expo-app/x402.ts` shows the shape: the 402's scheme, network, token, amount and payee are checked against what the app expects, and a 402 that fails sends nothing to Circle. The tests cover that refusal.
 
 Two smaller points. The wallet is a smart contract account, so its signatures verify through ERC-1271 rather than `ecrecover`, and only once the wallet is deployed; a new wallet needs one first transaction of any kind before a seller's facilitator will accept its signature. And requests go out with the runtime's own User-Agent. The library never claims to be Circle's CLI, and if Circle's proxy starts refusing other clients, that is a stop, not something to work around.
 

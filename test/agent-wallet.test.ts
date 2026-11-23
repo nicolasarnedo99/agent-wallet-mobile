@@ -164,6 +164,14 @@ describe('signing', () => {
     expect(approve.additionalPinhash.hashPinhash).toBe(Buffer.from(hex(sha256(hex(pinhash)))).toString('base64'));
     expect(approve.deviceInfo).toEqual({ os: { model: '', version: '' }, browser: { model: 'WebSDK', version: '' }, device: { model: 'Desktop', version: '' }, sdk: { model: 'Web', version: '' } });
   });
+  // Reported from Base mainnet on 24 Nov 2026: with a per-payment limit of 0.005 USDC, Circle refused to sign a 0.01 USDC payment.
+  it("names Circle's spending limit when it refuses to sign, keeps Circle's reason, and opens no challenge", async () => {
+    const { wallet, circle } = await loggedIn('arc', { overLimit: true });
+    const error = await wallet.signTypedData(typed).catch(e => e);
+    expect(code(error)).toBe('limit_exceeded');
+    expect(error.message).toContain('spend limit exceeded');
+    expect(circle.calls).toEqual(['POST /v1/w3s/user/sign/typedData']);
+  });
   it('says so rather than signing a message or a raw transaction, which this client does not do', async () => {
     const { wallet, circle } = await loggedIn();
     const account = await wallet.account();
