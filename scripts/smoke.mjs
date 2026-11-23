@@ -76,10 +76,11 @@ async function main() {
       if (status.hash !== sent.hash) throw new Error(`transaction() reports hash ${status.hash}, call() returned ${sent.hash}`);
     }
     if (process.argv.includes('--fund')) {
+      const before = Number(await agent.balance());
       await agent.fund();
-      let now = result.balanceBefore;
-      for (let i = 0; i < 30 && Number(now) <= Number(result.balanceBefore) - 0.02; i++) { await new Promise(done => setTimeout(done, 2000)); now = await agent.balance(); }
-      result.fund = Number(now) > Number(result.balanceBefore) - 0.02 ? `arrived: balance ${now}` : 'accepted by Circle, nothing arrived within a minute';
+      let now = before;
+      for (let i = 0; i < 30 && now <= before; i++) { await new Promise(done => setTimeout(done, 2000)); now = Number(await agent.balance()); }
+      result.fund = now > before ? `arrived: balance ${before} -> ${now}` : 'accepted by Circle, nothing arrived within a minute';
       console.log(`fund     ${result.fund}`);
     }
     if (process.argv.includes('--transfer')) {
