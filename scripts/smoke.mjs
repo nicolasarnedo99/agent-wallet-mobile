@@ -4,8 +4,11 @@
 //   npm run smoke            # the payment
 //   npm run smoke -- --call  # the payment, then a zero USDC approve through call() and transaction()
 //   npm run smoke -- --fund --transfer   # also ask the faucet for USDC, and transfer 0.01 USDC to the payee
+//   npm run smoke -- --base --call --transfer --limits   # Base mainnet, REAL USDC: the payment costs 0.01, the transfer goes to
+//                                                        # the wallet itself, and --limits sets a small cap, sees Circle refuse, resets
 //
-// SMOKE_URL is the x402 resource to pay and SMOKE_PAY_TO the address it is paid at; put both in .env.local, which git ignores.
+// SMOKE_URL is the x402 resource to pay and SMOKE_PAY_TO the address it is paid at (SMOKE_BASE_URL and SMOKE_BASE_PAY_TO with --base);
+// put them in .env.local, which git ignores.
 // The email and the code are typed with echo off, go to the library and nowhere else. The session stays in this process's
 // memory. smoke-result.json gets the address, the balances and the transaction hashes: nothing secret.
 import { writeFileSync } from 'node:fs';
@@ -16,11 +19,13 @@ import { AgentWalletError, NETWORKS, createAgentWallet, memoryStorage } from '..
 import { payOnce } from '../examples/expo-app/x402.ts';
 
 // The one seller this script pays. payOnce refuses any 402 that differs from TERMS before Circle is asked to sign.
-const RESOURCE = process.env.SMOKE_URL;
-const PAYEE = process.env.SMOKE_PAY_TO;
-const USDC = NETWORKS.arc.usdc;
-const TERMS = { network: 'eip155:5042002', asset: USDC, name: 'USDC', version: '2', maxAmount: 10_000n /* 0.01 USDC */, payTo: PAYEE };
-const chain = createPublicClient({ transport: http('https://rpc.testnet.arc.io') });
+const BASE = process.argv.includes('--base');
+const NET = BASE ? 'base' : 'arc';
+const RESOURCE = BASE ? process.env.SMOKE_BASE_URL : process.env.SMOKE_URL;
+const PAYEE = BASE ? process.env.SMOKE_BASE_PAY_TO : process.env.SMOKE_PAY_TO;
+const USDC = NETWORKS[NET].usdc;
+const TERMS = { network: `eip155:${NETWORKS[NET].chainId}`, asset: USDC, name: BASE ? 'USD Coin' : 'USDC', version: '2', maxAmount: 10_000n /* 0.01 USDC */, payTo: PAYEE };
+const chain = createPublicClient({ transport: http(BASE ? 'https://mainnet.base.org' : 'https://rpc.testnet.arc.io') });
 
 export async function ask(question) {
   process.stdout.write(question);
@@ -38,10 +43,13 @@ export async function onChain(hash, eventName, matches) {
 }
 
 async function main() {
-  if (!RESOURCE || !/^0x[0-9a-fA-F]{40}$/.test(PAYEE ?? '')) throw new Error('Set SMOKE_URL and SMOKE_PAY_TO (see the top of this file)');
+  if (!RESOURCE || !/^0x[0-9a-fA-F]{40}$/.test(PAYEE ?? '')) throw new Error('Set the seller URL and its payee in .env.local (see the top of this file)');
+  if (BASE && process.argv.includes('--fund')) throw new Error('There is no faucet on mainnet');
+  if (!BASE && process.argv.includes('--limits')) throw new Error('Limits exist on mainnet only: add --base');
+  if (BASE) console.log('BASE MAINNET: this run spends 0.01 real USDC.');
   const withCall = process.argv.includes('--call');
-  const result = { package: 'dist/ built from this checkout', network: 'arc', ranAt: new Date().toISOString() };
-  const agent = createAgentWallet({ network: 'arc' });
+  const result = { package: 'dist/ built from this checkout', network: NET, ranAt: new Date().toISOString() };
+  const agent = createAgentWallet({ network: NET });
   agent.login.prepare().catch(() => undefined);
 
   await agent.login.start(await ask('Email of your Circle agent wallet account (typing is hidden): '));
@@ -84,10 +92,40 @@ async function main() {
       console.log(`fund     ${result.fund}`);
     }
     if (process.argv.includes('--transfer')) {
-      const moved = await agent.transfer({ to: PAYEE, amount: '0.01' });
-      const transferBlock = await onChain(moved.hash, 'Transfer', args => same(args.from, wallet.address) && same(args.to, PAYEE) && args.value === 10_000n);
+      const to = BASE ? wallet.address : PAYEE; // on mainnet the money goes back to the wallet it came from
+      const moved = await agent.transfer({ to, amount: '0.01' });
+      const transferBlock = await onChain(moved.hash, 'Transfer', args => same(args.from, wallet.address) && same(args.to, to) && args.value === 10_000n);
       result.transfer = { hash: moved.hash, block: transferBlock, transactionId: moved.transactionId };
-      console.log(`transfer ok: ${moved.hash} (block ${transferBlock}, 0.01 USDC from the wallet to ${PAYEE})`);
+      console.log(`transfer ok: ${moved.hash} (block ${transferBlock}, 0.01 USDC from the wallet to ${to})`);
+    }
+    if (process.argv.includes('--limits')) {
+      const CAP = { perTx: '0.005', daily: '0.01', weekly: '0.05', monthly: '0.1' };
+      const custom = rows => rows.filter(row => row.origin === 'CUSTOM');
+      result.limits = { before: await agent.limits.read(), budget: await agent.limits.budget() };
+      console.log(`limits   now: ${JSON.stringify(result.limits.before)}`);
+      console.log(`         budget: ${JSON.stringify(result.limits.budget)}`);
+      if (custom(result.limits.before).length) throw new Error('A custom limit is already set and this test would remove it: reset it yourself first');
+      await agent.limits.owner.start(await ask('Owner login for changing limits. The same email again (typing is hidden): '));
+      await agent.limits.owner.finish(await ask('The second code (typing is hidden): '));
+      try {
+        await agent.limits.set(CAP);
+        result.limits.set = custom(await agent.limits.read());
+        if (!result.limits.set.some(row => row.perTx === CAP.perTx)) throw new Error('limits.set() returned but Circle shows no such limit');
+        console.log(`limits   set: ${JSON.stringify(result.limits.set)}`);
+        const again = await agent.limits.set({ ...CAP, monthly: '1' }).then(() => 'REPLACED IT', error => error.code);
+        console.log(`limits   a second set() without reset(): ${again}`);
+        // Twice the cap per payment: Circle should refuse to sign the payment and to send the transfer, and no money should move.
+        const signing = await payOnce(RESOURCE, await agent.x402Signer(), TERMS).then(paid => `NOT REFUSED: paid ${paid.transaction}`, error => error.message);
+        const sending = await agent.transfer({ to: wallet.address, amount: '0.01' }).then(sent => `NOT REFUSED: sent ${sent.hash}`, error => `${error.code}: ${error.message}`);
+        result.limits.refused = { signing, sending };
+        console.log(`limits   0.01 USDC payment under a 0.005 cap: ${signing}`);
+        console.log(`limits   0.01 USDC transfer under a 0.005 cap: ${sending}`);
+      } finally {
+        await agent.limits.reset().catch(error => console.error(`LIMIT NOT RESET (${error.message}). Run: circle wallet limit reset --address ${wallet.address} --chain BASE`));
+        result.limits.after = await agent.limits.read();
+        console.log(`limits   after reset: ${JSON.stringify(result.limits.after)}`);
+        if (custom(result.limits.after).length) console.error(`A CUSTOM LIMIT IS STILL SET. Run: circle wallet limit reset --address ${wallet.address} --chain BASE`);
+      }
     }
     result.balanceAfter = await agent.balance();
     console.log(`balance  ${result.balanceAfter} USDC`);
@@ -96,7 +134,7 @@ async function main() {
     const old = await agent.session();
     await agent.logout('local');
     const storage = { ...memoryStorage(), get: async () => JSON.stringify(old) };
-    const refused = await createAgentWallet({ network: 'arc', storage }).balance().then(() => null, error => error);
+    const refused = await createAgentWallet({ network: NET, storage }).balance().then(() => null, error => error);
     result.logout = refused instanceof AgentWalletError && refused.status ? `revoked: Circle answers ${refused.status} to the old session` : 'NOT REVOKED: Circle still answers the old session';
     console.log(`logout   ${result.logout}`);
     writeFileSync(new URL('../smoke-result.json', import.meta.url), `${JSON.stringify(result, null, 2)}\n`);
