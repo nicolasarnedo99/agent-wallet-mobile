@@ -78,7 +78,7 @@ Login. The token in the headers is the device token throughout.
 
 The session's expiry is the `exp` claim of the `userToken` JWT (`session.ts:542`). The CLI throws the refresh token away (`auth-flow.ts:232`), and this library never reads it.
 
-On a first login (`bootstrap`) the CLI goes on to `POST /v1/w3s/user/initialize` with `{idempotencyKey, accountType: "SCA", blockchains: […]}`, approves the challenge it returns, and so creates a smart contract account on every chain (`circle-http-client.ts:395`, `auth-flow.ts:264`). This library does the same on testnet, with the CLI's list of nine testnet chains (`chain-map.ts:286`); a 409 means the account is already set up. Unlike the CLI, it treats a creation that fails or times out as an error and keeps no session. On mainnet it stops and asks for one login in the CLI. This path ran against Circle once, on Arc testnet on 24 Nov 2026, and produced a new, undeployed wallet.
+On a first login (`bootstrap`) the CLI goes on to `POST /v1/w3s/user/initialize` with `{idempotencyKey, accountType: "SCA", blockchains: […]}`, approves the challenge it returns, and so creates a smart contract account on every chain (`circle-http-client.ts:395`, `auth-flow.ts:264`). This library does the same, with the CLI's list of nine chains for the network (`chain-map.ts:286`); a 409 means the account is already set up. Unlike the CLI, it treats a creation that fails or times out as an error and keeps no session. This path ran against Circle once, on Arc testnet on 24 Nov 2026, and produced a new, undeployed wallet. On mainnet it has run against the stand-in only.
 
 With a session. The token in the headers is the user token.
 
