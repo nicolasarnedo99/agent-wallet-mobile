@@ -105,13 +105,11 @@ describe('login', () => {
     expect(code(await wallet.login.finish(CODE).catch(e => e))).toBe('protocol');
     expect(await storage.get(KEY.arc)).toBeNull();
   }, 120_000);
-  it('leaves a first mainnet login to the Circle CLI, before any code is asked for', async () => {
+  it('creates the wallets on a first mainnet login too, on the mainnet chains and none of the testnet ones', async () => {
     const { wallet, circle } = fresh('base', { operation: 'bootstrap' });
-    const failure = await wallet.login.start(EMAIL).catch(e => e);
-    expect(code(failure)).toBe('needs_cli_bootstrap');
-    expect(failure.message).toContain('circle wallet login');
-    expect(circle.calls.some(call => call.includes('initialize'))).toBe(false);
-    await expect(wallet.login.finish(CODE)).rejects.toThrow('No login in progress');
+    await wallet.login.start(EMAIL);
+    expect(await wallet.login.finish(CODE)).toMatchObject({ address: WALLETS.base.address, blockchain: 'BASE' });
+    expect(circle.seen.initialize.blockchains).toEqual(['ETH', 'MATIC', 'ARB', 'AVAX', 'OP', 'BASE', 'UNI', 'MONAD', 'ARC']);
   }, 120_000);
   it('never puts the email or the code in an error', async () => {
     const circle = fakeCircle();

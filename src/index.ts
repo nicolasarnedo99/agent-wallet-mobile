@@ -13,11 +13,12 @@ import { toAccount, type LocalAccount } from 'viem/accounts';
 // Circle keeps testnet and mainnet apart: each has its own proxy, login and wallets, so a session belongs to one network.
 export type Network = 'arc' | 'base';
 export const NETWORKS = {
-  arc: { proxy: 'https://agentic-wallet.circle.com/proxy/test', blockchain: 'ARC-TESTNET', chainId: 5042002, usdc: '0x3600000000000000000000000000000000000000', cliLogin: 'circle wallet login --testnet' },
-  base: { proxy: 'https://agentic-wallet.circle.com/proxy/live', blockchain: 'BASE', chainId: 8453, usdc: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', cliLogin: 'circle wallet login' },
+  arc: { proxy: 'https://agentic-wallet.circle.com/proxy/test', blockchain: 'ARC-TESTNET', chainId: 5042002, usdc: '0x3600000000000000000000000000000000000000' },
+  base: { proxy: 'https://agentic-wallet.circle.com/proxy/live', blockchain: 'BASE', chainId: 8453, usdc: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913' },
 } as const;
-// The chains a first testnet login creates wallets on: the CLI's own list (chain-map.ts).
-const TESTNET_CHAINS = ['ETH-SEPOLIA', 'MATIC-AMOY', 'ARB-SEPOLIA', 'AVAX-FUJI', 'OP-SEPOLIA', 'BASE-SEPOLIA', 'UNI-SEPOLIA', 'MONAD-TESTNET', 'ARC-TESTNET'];
+// The chains a first login creates wallets on, by network: the CLI's own lists (chain-map.ts).
+const FIRST_LOGIN_CHAINS = { arc: ['ETH-SEPOLIA', 'MATIC-AMOY', 'ARB-SEPOLIA', 'AVAX-FUJI', 'OP-SEPOLIA', 'BASE-SEPOLIA', 'UNI-SEPOLIA', 'MONAD-TESTNET', 'ARC-TESTNET'],
+  base: ['ETH', 'MATIC', 'ARB', 'AVAX', 'OP', 'BASE', 'UNI', 'MONAD', 'ARC'] };
 // The approval's device info is the CLI's own, the only value known to pass; a phone's own values were not tried.
 const DEVICE = { os: { model: '', version: '' }, browser: { model: 'WebSDK', version: '' }, device: { model: 'Desktop', version: '' }, sdk: { model: 'Web', version: '' } };
 
@@ -41,7 +42,7 @@ export type Budget = { policyType: string; perTx: string | null; daily: string |
   monthly: string | null; monthlyRemaining: string | null; origin: string };
 export type Storage = { get(key: string): Promise<string | null>; set(key: string, value: string): Promise<void>; remove(key: string): Promise<void> };
 
-export type ErrorCode = 'not_logged_in' | 'session_expired' | 'needs_cli_bootstrap' | 'wrong_code' | 'invalid_input' | 'http' | 'protocol' | 'transaction_failed' | 'limit_exceeded';
+export type ErrorCode = 'not_logged_in' | 'session_expired' | 'wrong_code' | 'invalid_input' | 'http' | 'protocol' | 'transaction_failed' | 'limit_exceeded';
 export class AgentWalletError extends Error {
   // `status` is Circle's HTTP status, on `http` errors only.
   constructor(readonly code: ErrorCode, message: string, readonly status?: number) { super(message); this.name = 'AgentWalletError'; }
@@ -182,10 +183,7 @@ async function startLogin(f: Fetch, network: Network, email: string, keys: Login
   if (typeof device.deviceToken !== 'string' || typeof device.deviceEncryptionKey !== 'string') throw broken('Circle sent no device credentials');
   const challenge = await plain(f, on, 'POST', '/v1/w3s/auth/challenges', device.deviceToken, { idempotencyKey: uuid(), operation: 'login',
     registeredFactors: [{ factor: 'email_otp', emailOtp: { destination: email, suite: 'RSA_OAEP_256_A256GCM', publicKey: keys.publicKey } }] });
-  // A first login also creates the wallets. On mainnet that is still left to the CLI: nothing here has created mainnet wallets.
-  const firstLogin = challenge.operation === 'bootstrap';
-  if (firstLogin && network !== 'arc' && !base) throw new AgentWalletError('needs_cli_bootstrap',
-    `No agent wallets on this account yet: log in once with the Circle CLI (${NETWORKS[network].cliLogin}), then here`);
+  const firstLogin = challenge.operation === 'bootstrap'; // a first login also creates the wallets, in finishLogin
   if ((!firstLogin && challenge.operation !== 'login') || typeof challenge.challengeId !== 'string' || typeof challenge.correlationState !== 'string')
     throw broken('Circle answered the login with an unexpected challenge');
   const { appId } = await plain(f, on, 'GET', '/config');
@@ -254,7 +252,7 @@ async function finishLogin(f: Fetch, pending: PendingLogin, typed: string): Prom
   // A first login: Circle creates a wallet on each chain, behind a challenge approved like a signature. Unlike the CLI, a creation
   // that fails or never finishes is an error here, so no session is kept for an account that has no wallet.
   if (pending.firstLogin) {
-    const created = await plain(f, pending, 'POST', '/v1/w3s/user/initialize', done.userToken, { idempotencyKey: uuid(), accountType: 'SCA', blockchains: TESTNET_CHAINS })
+    const created = await plain(f, pending, 'POST', '/v1/w3s/user/initialize', done.userToken, { idempotencyKey: uuid(), accountType: 'SCA', blockchains: FIRST_LOGIN_CHAINS[pending.network] })
       .catch(error => { if (error instanceof AgentWalletError && error.status === 409) return null; throw error; }); // 409: already set up
     if (created) {
       if (typeof created.challengeId !== 'string') throw broken('Circle sent no wallet creation challenge');
