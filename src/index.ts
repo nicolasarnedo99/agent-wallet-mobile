@@ -444,6 +444,13 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
         walletId: s.walletId, sourceAddress: s.address, blockchain: NETWORKS[network].blockchain, contractAddress: tx.to, callData: tx.data, feeLevel: 'MEDIUM' }));
       return settle(s, challengeId);
     },
+    // A new wallet is a smart contract account that does not exist on-chain yet, and Circle will not sign for it until it does:
+    // its first transaction deploys it. This sends one that moves nothing, a zero USDC approve to the wallet itself, with the gas
+    // sponsored where we measured. Harmless to repeat on a wallet that is already deployed.
+    async deploy(): Promise<{ hash: Hex; transactionId: string }> {
+      const { address } = await live();
+      return this.call({ to: NETWORKS[network].usdc, data: `0x095ea7b3${address.slice(2).toLowerCase().padStart(64, '0')}${'0'.repeat(64)}` });
+    },
     // Sends a token from the wallet, USDC unless `token` names another contract. `amount` is a decimal string in whole tokens ("0.01").
     async transfer(tx: { to: string; amount: string; token?: string }): Promise<{ hash: Hex; transactionId: string }> {
       const s = await live();

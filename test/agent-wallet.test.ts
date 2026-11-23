@@ -215,6 +215,11 @@ describe('call', () => {
     expect(circle.seen.polls).toBe(2);
     expect(await wallet.transaction('t-9')).toEqual({ id: 't-9', state: 'CONFIRMED', hash: MINED, errorReason: null });
   });
+  it('deploys a new wallet with a call that moves nothing: a zero USDC approve to itself', async () => {
+    const { wallet, circle } = await loggedIn();
+    await expect(wallet.deploy()).resolves.toEqual({ hash: MINED, transactionId: 't-9' });
+    expect(circle.seen.execution).toMatchObject({ contractAddress: ARC_USDC, callData: `0x095ea7b3${'0'.repeat(24)}${WALLETS.arc.address.slice(2)}${'0'.repeat(64)}` });
+  });
   it("throws Circle's reason when the transaction fails, with its id, so nothing reads as done", async () => {
     const { wallet } = await loggedIn('arc', { transaction: { state: 'FAILED', errorReason: 'EXECUTION_REVERTED', txHash: MINED } });
     const failure = await wallet.call({ to: SELLER, data: '0xabcdef' }).catch(e => e);
