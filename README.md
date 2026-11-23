@@ -4,7 +4,7 @@ A small TypeScript client that logs in to a Circle Agent Wallet and signs with i
 
 **Unofficial.** This project is not affiliated with, sponsored by or endorsed by Circle. It talks to the same backend that Circle's own CLI (`@circle-fin/cli` 1.4.0) talks to, an API Circle has not documented for outside use and can change at any time. Read [Known gaps](#known-gaps) before relying on it for anything.
 
-The code is lifted out of Nest, an iPhone app where it paid for x402 resources from an agent wallet on Arc testnet. This package is that client on its own, with logout added and the app taken away. Its tests run against a stand-in for Circle's proxy; the packaged version has not yet been run against Circle itself (see the end of [Known gaps](#known-gaps)).
+The code is lifted out of Nest, an iPhone app where it paid for x402 resources from an agent wallet on Arc testnet. This package is that client on its own, with logout added and the app taken away. Its tests run against a stand-in for Circle's proxy. The built package has also run against Circle itself, from Node on Arc testnet: a login, a payment, a contract call and a logout (see the end of [Known gaps](#known-gaps)).
 
 ## Quick start
 
@@ -39,7 +39,7 @@ On the next launch, `createAgentWallet` with the same storage finds the session 
 
 Every failure is an `AgentWalletError` with a `code`: `not_logged_in`, `session_expired`, `needs_cli_bootstrap`, `wrong_code`, `invalid_input`, `http` (with Circle's `status`), `protocol` (Circle answered with something this client does not understand) or `transaction_failed`.
 
-[`examples/expo-app`](examples/expo-app) has a one-screen app (log in, balance, pay one x402 resource). It has not been built or run on a device yet; its payment helper, `x402.ts`, is the part the tests exercise.
+[`examples/expo-app`](examples/expo-app) has a one-screen app (log in, balance, pay one x402 resource). It builds and installs on an iPhone, and has not yet logged in or paid from one. Its payment helper, `x402.ts`, is the part the tests and the smoke script exercise.
 
 ## Security model
 
@@ -72,13 +72,13 @@ A session cannot be refreshed. The CLI never keeps a refresh token and neither d
 
 A new account's first login has to happen in Circle's CLI. That first login creates the wallets (Circle calls it bootstrap), and this client stops with `needs_cli_bootstrap` instead of doing it. Run `circle wallet login --testnet` (or without the flag for mainnet) once, then log in here. Accounts from before Circle's current login flow use an older path this client does not implement either.
 
-It signs typed data and sends contract calls, and that is all: no `signMessage`, no raw transactions, no token-transfer shortcut, no spending policies, no Gateway. `call()` waits at most a minute for the approval and a minute for the transaction; past that it throws with the transaction's id in the message, and `transaction(id)` reports where it stands.
+It signs typed data and sends contract calls, and that is all: no `signMessage`, no raw transactions, no token-transfer shortcut, no spending policies, no Gateway. `call()` waits at most a minute for the approval and a minute for the transaction. A transaction that outlasts its minute throws with its id in the message, and `transaction(id)` reports where it stands.
 
 Only an iPhone has run this code. Android goes through the same `react-native-keychain` call and should work, but nobody has tried. The approval request still carries the device description the CLI sends (`WebSDK`, `Desktop`), because that is the only value known to pass.
 
 Making the RSA-2048 login key in pure JavaScript is slow: about 22 seconds in Node with the JIT off, used as a stand-in for a phone's engine. It was not timed on the iPhone. Call `login.prepare()` when the email field gets focus so the wait hides behind typing. The key is made in 50 ms slices with a `setTimeout` between them. That is deliberate: node-forge's own async generation chains `setImmediate`, which React Native 0.88 runs as a microtask, and the app froze until the key was done.
 
-Last, what has and has not run for real. The login, balance and typed-data signing code ran against Circle from Nest on an iPhone, where it lived as one file. The contract-call code came from the same file, but no call it sent from the phone is on record, so count it as tested against the fake only. This package rearranges all of it behind `createAgentWallet`, and in this form nothing has run against Circle. `logout` and `transaction` are new here and have never been sent to Circle at all.
+Last, what has and has not run for real. On 23 Nov 2026 the built package ran against Circle from Node on Arc testnet (`npm run smoke`): login, wallet, balance, one x402 payment, `call()`, `transaction()` and `logout('local')`, with both transactions checked on-chain and the old session refused afterwards. The hashes are in [docs/FOR-CIRCLE.md](docs/FOR-CIRCLE.md). On a phone, the login, balance and typed-data signing code ran from Nest on an iPhone, where it lived as one file; this package itself has only been built and installed there. Nothing from this package has run on Base mainnet, and `logout('all')` has never been sent to Circle.
 
 ## Development
 
@@ -87,6 +87,7 @@ npm install
 npm test            # vitest, against a stand-in for Circle's proxy; no network
 npm run typecheck
 npm run build       # dist/
+npm run smoke       # live, on Arc testnet: asks for your email and code, pays a seller of mine 0.01 USDC
 ```
 
 The fake in `test/fake-circle.ts` is written with Node's own crypto from the CLI's source, so the library's AES, RSA and PIN code is checked against a second implementation rather than against itself. The library itself imports no Node built-ins.

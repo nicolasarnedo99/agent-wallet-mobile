@@ -2,7 +2,7 @@
 
 How a client logs in to a Circle Agent Wallet and signs with it, as read from the TypeScript source of `@circle-fin/cli` 1.4.0 (Apache-2.0), which ships inside the npm package in the source map of `dist/index.js`. File references such as `sdk-client.ts:526` point into that source. None of this is documented by Circle for outside use, and any CLI release may change it.
 
-The calls in the tables were read in the CLI's source. Those this library makes were also checked against a stand-in written from the same source (`test/fake-circle.ts`). The login, wallet, balance and typed-data calls ran against Circle from the Nest app on an iPhone on 23 Nov 2026; the contract-call, transaction-status and logout calls have no such run on record.
+The calls in the tables were read in the CLI's source. Those this library makes were also checked against a stand-in written from the same source (`test/fake-circle.ts`). The login, wallet, balance and typed-data calls ran against Circle from the Nest app on an iPhone on 23 Nov 2026; the contract-call, transaction-status and logout (`local`) calls ran from this package in Node on Arc testnet the same day.
 
 ## Where the calls go
 
@@ -92,7 +92,7 @@ With a session. The token in the headers is the user token.
 | `POST /v1/w3s/sdk/user/challenges/{id}/approve` (SDK) | encrypts `{idempotencyKey, pinhash, hashPinhash, additionalPinhash: {version: 0, pinhash, hashPinhash}, deviceInfo, pinType: "AUTO"}` | for a signature, decrypts to `{data: {signature}}`; for a transaction there may be no body. 403 means the challenge was already completed | `sdk-client.ts:526`, `x402-client.ts:465`, `commands/wallet/helpers.ts:228` |
 | `GET /v1/w3s/user/challenges/{id}` | nothing | `{challenge: {status, correlationIds}}`. Polled until `COMPLETE`, `FAILED` or `EXPIRED`; for a transaction, `correlationIds[0]` is its id | `circle-http-client.ts:591` |
 | `GET /v1/w3s/transactions/{id}` | nothing | `{transaction: {state, txHash, errorReason, …}}`. Polled until `CONFIRMED` or `COMPLETE` (done), or `FAILED`, `CANCELLED`, `DENIED` | `circle-http-client.ts:887` |
-| `POST /v1/w3s/users/token/deactivate` | `{idempotencyKey, scope: "local" \| "all"}`; `local` ends this session, `all` ends every device's | 204, no body | `circle-http-client.ts:381` |
+| `POST /v1/w3s/users/token/deactivate` | `{idempotencyKey, scope: "local" \| "all"}`; `local` ends this session, `all` ends every device's | 204, no body. Afterwards Circle answered that session's balance call with 403 | `circle-http-client.ts:381` |
 
 `deviceInfo` is `{os: {model: "", version: ""}, browser: {model: "WebSDK", version: ""}, device: {model: "Desktop", version: ""}, sdk: {model: "Web", version: ""}}`, the CLI's own value.
 
