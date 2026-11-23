@@ -59,6 +59,7 @@ export function unwrapPinhash(encrypted: string): string {
 export function fakeCircle(network: Network = 'arc', options: { operation?: 'login' | 'bootstrap'; transaction?: object; deactivate?: number; overLimit?: boolean; initialize?: 409 | 'FAILED'; customLimit?: boolean } = {}) {
   const { transaction = { state: 'CONFIRMED', txHash: MINED }, deactivate = 204 } = options;
   const DEFAULT_LIMIT: any = { policy_type: 'STABLECOIN_TRANSFER', rule_type: 'TRANSFER_LIMIT', per_tx_limit: '', daily_limit: '', weekly_limit: '', monthly_limit: '100', origin: 'DEFAULT' };
+  let made = options.customLimit ? 1 : 0;
   let policies: any[] = options.customLimit ? [{ ...DEFAULT_LIMIT, blockchain: 'BASE', per_tx_limit: '0.005', daily_limit: '0.01', weekly_limit: '0.05', monthly_limit: '0.1', origin: 'CUSTOM', policy_id: 'p-1' }] : [DEFAULT_LIMIT];
   const proxy = NETWORKS[network].proxy;
   const wallet = WALLETS[network];
@@ -89,16 +90,22 @@ export function fakeCircle(network: Network = 'arc', options: { operation?: 'log
             monthly_limit: '100', monthly_remaining: '99.97', origin: 'DEFAULT' } } } });
         case 'POST /v1/policy': {
           seen.policy = JSON.parse(body);
-          if (policies.some(row => row.origin === 'CUSTOM')) return json(409, { message: 'active custom policy exists' });
-          const { per_tx, daily, weekly, monthly } = seen.policy.params;
-          policies = [{ policy_type: 'STABLECOIN_TRANSFER', rule_type: 'TRANSFER_LIMIT', blockchain: 'BASE', per_tx_limit: per_tx, daily_limit: daily, weekly_limit: weekly, monthly_limit: monthly, origin: 'CUSTOM', policy_id: 'p-1' }];
-          return json(200, { data: { id: 'p-1' } });
+          const { policy_type, rule_type, params: { per_tx, daily, weekly, monthly, addresses } } = seen.policy;
+          const same = (row: any) => row.policy_type === policy_type && row.rule_type === rule_type;
+          if (policies.some(row => row.origin === 'CUSTOM' && same(row))) return json(409, { message: 'active custom policy exists' }); // one custom rule per type
+          const policy_id = `p-${++made}`;
+          policies = [...policies.filter(row => !same(row)), addresses ? { policy_type, rule_type, blockchain: 'BASE', addresses, origin: 'CUSTOM', policy_id }
+            : { policy_type, rule_type, blockchain: 'BASE', per_tx_limit: per_tx, daily_limit: daily, weekly_limit: weekly, monthly_limit: monthly, origin: 'CUSTOM', policy_id }];
+          return json(200, { data: { id: policy_id } });
         }
-        case 'DELETE /v1/policy/p-1':
-          if (!policies.some(row => row.origin === 'CUSTOM')) return json(404, { message: 'gone' });
-          policies = [DEFAULT_LIMIT];
+        default: {
+          const id = /^DELETE \/v1\/policy\/(p-\d+)$/.exec(`${method} ${path}`)?.[1];
+          const row = policies.find(found => found.policy_id === id);
+          if (!id || !row) return json(404, { message: 'gone' });
+          policies = policies.filter(found => found !== row);
+          if (row.policy_type === 'STABLECOIN_TRANSFER' && row.rule_type === 'TRANSFER_LIMIT') policies.push(DEFAULT_LIMIT); // Circle's default comes back
           return new Response(null, { status: 204 });
-        default: return json(404, { message: `no route ${method} ${path}` });
+        }
       }
     }
     expect(headers.get('user-agent')).toBeNull(); // the runtime's own User-Agent goes out: the library never claims to be the CLI

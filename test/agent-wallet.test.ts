@@ -326,6 +326,32 @@ describe('limits', () => {
     expect(code(await wallet.limits.set(bad).catch(e => e))).toBe('invalid_input');
     expect(circle.calls).toEqual([]);
   });
+  it('caps contract calls with their own limit, and restricts contracts and recipients with lists, each removable alone', async () => {
+    const { wallet, circle } = await loggedIn('base');
+    await wallet.limits.owner.start(EMAIL); await wallet.limits.owner.finish(CODE);
+    await wallet.limits.set(CAP, 'contract');
+    expect(circle.seen.policy).toMatchObject({ policy_type: 'CONTRACT_INTERACTION', rule_type: 'TRANSFER_LIMIT', params: { per_tx: '0.005' } });
+    const SELLER = '0xF46F48677E11aae0f3354aa69b2fa10c8fd8dbe8';
+    await wallet.limits.setList('contract-allowlist', [SELLER, SELLER.toLowerCase(), BASE_USDC]);
+    expect(circle.seen.policy).toEqual({ wallet_id: 'w-base', blockchain: 'BASE', policy_type: 'CONTRACT_INTERACTION', rule_type: 'CONTRACT_ALLOWLIST',
+      params: { addresses: [SELLER.toLowerCase(), BASE_USDC.toLowerCase()] } });
+    await wallet.limits.setList('recipient-blocklist', [SELLER]);
+    expect(circle.seen.policy).toMatchObject({ policy_type: 'STABLECOIN_TRANSFER', rule_type: 'RECIPIENT_BLOCKLIST' });
+    expect(code(await wallet.limits.setList('recipient-blocklist', [BASE_USDC]).catch(e => e))).toBe('invalid_input'); // one of each: reset it first
+
+    const rules = await wallet.limits.read();
+    const allow = rules.find(rule => rule.ruleType === 'CONTRACT_ALLOWLIST')!;
+    expect(allow).toMatchObject({ policyType: 'CONTRACT_INTERACTION', addresses: [SELLER.toLowerCase(), BASE_USDC.toLowerCase()], origin: 'CUSTOM' });
+    await wallet.limits.reset(allow.id!);
+    expect((await wallet.limits.read()).map(rule => rule.ruleType).sort()).toEqual(['RECIPIENT_BLOCKLIST', 'TRANSFER_LIMIT', 'TRANSFER_LIMIT']);
+    await wallet.limits.reset();
+    expect(await wallet.limits.read()).toEqual([byDefault]);
+  }, 120_000);
+  it.each([[['0x1234']], [[]]])('refuses a list that is empty or holds something that is not an address, before asking Circle: %j', async addresses => {
+    const { wallet, circle } = await loggedIn('base');
+    expect(code(await wallet.limits.setList('contract-allowlist', addresses).catch(e => e))).toBe('invalid_input');
+    expect(circle.calls).toEqual([]);
+  });
   it('forgets the owner login after ten minutes, and at logout', async () => {
     const { wallet, circle } = await loggedIn('base');
     await wallet.limits.owner.start(EMAIL); await wallet.limits.owner.finish(CODE);
