@@ -16,6 +16,8 @@ export const NETWORKS = {
   arc: { proxy: 'https://agentic-wallet.circle.com/proxy/test', blockchain: 'ARC-TESTNET', chainId: 5042002, usdc: '0x3600000000000000000000000000000000000000', cliLogin: 'circle wallet login --testnet' },
   base: { proxy: 'https://agentic-wallet.circle.com/proxy/live', blockchain: 'BASE', chainId: 8453, usdc: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', cliLogin: 'circle wallet login' },
 } as const;
+// The chains a first testnet login creates wallets on: the CLI's own list (chain-map.ts).
+const TESTNET_CHAINS = ['ETH-SEPOLIA', 'MATIC-AMOY', 'ARB-SEPOLIA', 'AVAX-FUJI', 'OP-SEPOLIA', 'BASE-SEPOLIA', 'UNI-SEPOLIA', 'MONAD-TESTNET', 'ARC-TESTNET'];
 // The approval's device info is the CLI's own, the only value known to pass; a phone's own values were not tried.
 const DEVICE = { os: { model: '', version: '' }, browser: { model: 'WebSDK', version: '' }, device: { model: 'Desktop', version: '' }, sdk: { model: 'Web', version: '' } };
 
@@ -29,6 +31,8 @@ export type TypedData = { domain: Record<string, unknown>; types: Record<string,
 // The shape @x402/evm's ClientEvmSigner needs, declared here so this package does not depend on x402.
 export type X402Signer = { readonly address: Hex; signTypedData(data: TypedData): Promise<Hex> };
 export type TransactionStatus = { id: string; state: string; hash: Hex | null; errorReason: string | null };
+// One paid resource from Circle's Agent Marketplace; `accepts` lists what it charges, in base units, on which network.
+export type Service = { url: string; method: string | null; description: string | null; provider: string | null; accepts: { amount: string; network: string }[] };
 export type Storage = { get(key: string): Promise<string | null>; set(key: string, value: string): Promise<void>; remove(key: string): Promise<void> };
 
 export type ErrorCode = 'not_logged_in' | 'session_expired' | 'needs_cli_bootstrap' | 'wrong_code' | 'invalid_input' | 'http' | 'protocol' | 'transaction_failed' | 'limit_exceeded';
@@ -158,7 +162,7 @@ function openEnvelope(envelope: string, privateKey: forge.pki.rsa.PrivateKey): s
 
 // Held in memory between login.start and login.finish, never stored: it carries the email and the OTP token.
 type PendingLogin = Who & { email: string; deviceToken: string; deviceEncryptionKey: string; challengeId: string; correlationState: string; factorIndex: number;
-  otpToken: string; otpHead?: string };
+  otpToken: string; otpHead?: string; firstLogin: boolean };
 
 // Circle emails the code. Throws, before the code is asked for, at an account the Circle CLI has not set up yet.
 async function startLogin(f: Fetch, network: Network, email: string, keys: LoginKeys): Promise<PendingLogin> {
@@ -168,10 +172,11 @@ async function startLogin(f: Fetch, network: Network, email: string, keys: Login
   if (typeof device.deviceToken !== 'string' || typeof device.deviceEncryptionKey !== 'string') throw broken('Circle sent no device credentials');
   const challenge = await plain(f, on, 'POST', '/v1/w3s/auth/challenges', device.deviceToken, { idempotencyKey: uuid(), operation: 'login',
     registeredFactors: [{ factor: 'email_otp', emailOtp: { destination: email, suite: 'RSA_OAEP_256_A256GCM', publicKey: keys.publicKey } }] });
-  // A first login also creates the wallets; that is left to the CLI.
-  if (challenge.operation === 'bootstrap') throw new AgentWalletError('needs_cli_bootstrap',
+  // A first login also creates the wallets. On mainnet that is still left to the CLI: nothing here has created mainnet wallets.
+  const firstLogin = challenge.operation === 'bootstrap';
+  if (firstLogin && network !== 'arc') throw new AgentWalletError('needs_cli_bootstrap',
     `No agent wallets on this account yet: log in once with the Circle CLI (${NETWORKS[network].cliLogin}), then here`);
-  if (challenge.operation !== 'login' || typeof challenge.challengeId !== 'string' || typeof challenge.correlationState !== 'string')
+  if ((!firstLogin && challenge.operation !== 'login') || typeof challenge.challengeId !== 'string' || typeof challenge.correlationState !== 'string')
     throw broken('Circle answered the login with an unexpected challenge');
   const { appId } = await plain(f, on, 'GET', '/config');
   if (typeof appId !== 'string') throw broken('Circle sent no app id');
@@ -183,7 +188,7 @@ async function startLogin(f: Fetch, network: Network, email: string, keys: Login
   const otpToken = openEnvelope(wrapped, keys.privateKey);
   const otpHead = jwtPayload(otpToken)?.otpHead;
   return { ...who, email, deviceToken: device.deviceToken, deviceEncryptionKey: device.deviceEncryptionKey, challengeId: challenge.challengeId,
-    correlationState: challenge.correlationState, factorIndex, otpToken, ...(typeof otpHead === 'string' && otpHead.trim() ? { otpHead: otpHead.trim() } : {}) };
+    correlationState: challenge.correlationState, factorIndex, otpToken, firstLogin, ...(typeof otpHead === 'string' && otpHead.trim() ? { otpHead: otpHead.trim() } : {}) };
 }
 
 // Circle's codes read "ABC-123456"; the email's letters are in the OTP token, so six digits are enough to type.
@@ -229,11 +234,31 @@ async function finishLogin(f: Fetch, pending: PendingLogin, typed: string): Prom
   const exp = jwtPayload(done.userToken)?.exp;
   if (typeof exp !== 'number') throw broken('Circle sent a session with no expiry');
   const { blockchain } = NETWORKS[pending.network];
-  const { wallets } = await plain(f, pending, 'GET', `/v1/w3s/wallets?pageSize=50&blockchain=${blockchain}`, done.userToken);
-  const wallet = Array.isArray(wallets) ? wallets[0] : undefined;
-  if (typeof wallet?.id !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(String(wallet.address))) throw broken(`No ${blockchain} agent wallet on this account`);
-  return { network: pending.network, deviceId: pending.deviceId, appId: pending.appId, userToken: done.userToken, encryptionKey: done.encryptionKey,
-    encryptedUserSecret: seal(done.storageKey, bytes(done.userSecret)), storageKey: done.storageKey, expiresAt: exp * 1000, walletId: wallet.id, address: wallet.address };
+  const session = { network: pending.network, deviceId: pending.deviceId, appId: pending.appId, userToken: done.userToken, encryptionKey: done.encryptionKey,
+    encryptedUserSecret: seal(done.storageKey, bytes(done.userSecret)), storageKey: done.storageKey, expiresAt: exp * 1000 };
+  // A first login: Circle creates a wallet on each chain, behind a challenge approved like a signature. Unlike the CLI, a creation
+  // that fails or never finishes is an error here, so no session is kept for an account that has no wallet.
+  if (pending.firstLogin) {
+    const created = await plain(f, pending, 'POST', '/v1/w3s/user/initialize', done.userToken, { idempotencyKey: uuid(), accountType: 'SCA', blockchains: TESTNET_CHAINS })
+      .catch(error => { if (error instanceof AgentWalletError && error.status === 409) return null; throw error; }); // 409: already set up
+    if (created) {
+      if (typeof created.challengeId !== 'string') throw broken('Circle sent no wallet creation challenge');
+      await approve(f, { ...session, walletId: '', address: '0x' }, created.challengeId);
+      const { challenge } = await poll(() => plain(f, pending, 'GET', `/v1/w3s/user/challenges/${created.challengeId}`, done.userToken),
+        (answer: any) => ['COMPLETE', 'FAILED', 'EXPIRED'].includes(answer?.challenge?.status), 'creating the wallets');
+      if (challenge.status !== 'COMPLETE') throw broken(`Circle's wallet creation ended ${challenge.status}`);
+    }
+  }
+  // Just after a first login the wallet may not be listed yet, so that lookup alone is asked again for a few seconds.
+  const valid = (wallet: any) => typeof wallet?.id === 'string' && /^0x[0-9a-fA-F]{40}$/.test(String(wallet.address));
+  let wallet: any;
+  for (let i = 0; i < (pending.firstLogin ? 10 : 1) && !valid(wallet); i++) {
+    if (i) await sleep(1000);
+    const { wallets } = await plain(f, pending, 'GET', `/v1/w3s/wallets?pageSize=50&blockchain=${blockchain}`, done.userToken);
+    wallet = Array.isArray(wallets) ? wallets[0] : undefined;
+  }
+  if (!valid(wallet)) throw broken(`No ${blockchain} agent wallet on this account`);
+  return { ...session, walletId: wallet.id, address: wallet.address };
 }
 
 // Circle's PIN for an email user: sha256 of the user secret's first part and the challenge's share, never typed.
@@ -274,6 +299,27 @@ const status = (id: string, transaction: any): TransactionStatus => ({ id, state
   hash: /^0x[0-9a-fA-F]{64}$/.test(String(transaction?.txHash)) ? transaction.txHash : null,
   errorReason: typeof transaction?.errorReason === 'string' ? transaction.errorReason : null });
 
+// Circle refuses over-limit spending when the signature or the transaction is asked for, before any challenge exists: seen on
+// Base mainnet as a 400 "spend limit exceeded" (for signing; assumed the same for transactions).
+const limited = <T>(asked: Promise<T>): Promise<T> => asked.catch(error => {
+  throw error instanceof AgentWalletError && error.status === 400 && /spend limit/i.test(error.message) ? new AgentWalletError('limit_exceeded', error.message, 400) : error;
+});
+
+// Paid x402 resources listed in Circle's Agent Marketplace. Public: no session, no token. Check a result against your own terms
+// before paying it; being listed says nothing about the seller.
+export async function searchServices(filter: { query?: string; category?: string; limit?: number; offset?: number } = {}, f: Fetch = (input, init) => fetch(input, init)): Promise<Service[]> {
+  const query = new URLSearchParams();
+  for (const [name, value] of Object.entries(filter)) if (value !== undefined) query.set(name, String(value));
+  query.set('siwx', 'false');
+  const response = await f(`https://api.circle.com/v2/x402/discovery/resources?${query}`);
+  if (!response.ok) throw new AgentWalletError('http', `Circle's marketplace answered ${response.status}`, response.status);
+  const { items } = await response.json().catch(() => ({})) as { items?: unknown };
+  if (!Array.isArray(items)) throw broken("Circle's marketplace sent no list");
+  const text = (value: unknown) => (typeof value === 'string' ? value : null);
+  return items.filter(item => typeof item?.resource === 'string').map(item => ({ url: item.resource, method: text(item.metadata?.method), description: text(item.metadata?.description),
+    provider: text(item.metadata?.provider?.name), accepts: (Array.isArray(item.accepts) ? item.accepts : []).map((a: any) => ({ amount: String(a?.amount), network: String(a?.network) })) }));
+}
+
 export type AgentWallet = ReturnType<typeof createAgentWallet>;
 
 // One agent wallet on one network. `fetch` defaults to the runtime's, which sends its own User-Agent: this client never claims to
@@ -310,14 +356,26 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
     if (!primaryType) throw new AgentWalletError('invalid_input', 'Circle signs only typed data that names its primary type');
     const data = JSON.stringify({ types: { EIP712Domain: getTypesForEIP712Domain({ domain: domain as never }), ...types }, primaryType, domain, message },
       (_key, value) => (typeof value === 'bigint' ? value.toString() : value));
-    // Circle checks the wallet's spending limits here, before any challenge exists: seen on Base mainnet as a 400 "spend limit exceeded".
-    const { challengeId } = await plain(f, s, 'POST', '/v1/w3s/user/sign/typedData', s.userToken, { walletId: s.walletId, data }).catch(error => {
-      throw error instanceof AgentWalletError && error.status === 400 && /spend limit/i.test(error.message) ? new AgentWalletError('limit_exceeded', error.message, 400) : error;
-    });
+    const { challengeId } = await limited(plain(f, s, 'POST', '/v1/w3s/user/sign/typedData', s.userToken, { walletId: s.walletId, data }));
     if (typeof challengeId !== 'string') throw broken('Circle sent no signing challenge');
     const signature = (await approve(f, s, challengeId))?.data?.signature;
     if (typeof signature !== 'string' || !/^0x[0-9a-fA-F]+$/.test(signature)) throw broken('Circle approved but sent no signature');
     return signature as Hex;
+  }
+  // A transaction Circle has opened a challenge for: approve it, then wait for the approval and for the transaction itself.
+  async function settle(s: Session, challengeId: unknown): Promise<{ hash: Hex; transactionId: string }> {
+    if (typeof challengeId !== 'string') throw broken('Circle sent no transaction challenge');
+    await approve(f, s, challengeId);
+    const { challenge } = await poll(() => plain(f, s, 'GET', `/v1/w3s/user/challenges/${challengeId}`, s.userToken),
+      (answer: any) => ['COMPLETE', 'FAILED', 'EXPIRED'].includes(answer?.challenge?.status), `approval ${challengeId}`);
+    const id = challenge.correlationIds?.[0];
+    if (challenge.status !== 'COMPLETE' || typeof id !== 'string') throw new AgentWalletError('transaction_failed', `Circle's approval ended ${challenge.status}`);
+    const { transaction } = await poll(() => plain(f, s, 'GET', `/v1/w3s/transactions/${id}`, s.userToken),
+      (answer: any) => ['CONFIRMED', 'COMPLETE', 'FAILED', 'CANCELLED', 'DENIED'].includes(answer?.transaction?.state), `transaction ${id}`);
+    const { state, hash, errorReason } = status(id, transaction);
+    if (state !== 'CONFIRMED' && state !== 'COMPLETE') throw new AgentWalletError('transaction_failed', `Circle transaction ${id} ${state}${errorReason ? `: ${errorReason}` : ''}`);
+    if (!hash) throw broken(`Circle confirmed transaction ${id} but sent no hash`);
+    return { hash, transactionId: id };
   }
   const unsupported = async (): Promise<never> => { throw new AgentWalletError('invalid_input', 'This account only signs EIP-712 typed data; send transactions with call()'); };
 
@@ -364,20 +422,25 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
     // and the hash comes back only once Circle reports the transaction confirmed.
     async call(tx: { to: string; data: string }): Promise<{ hash: Hex; transactionId: string }> {
       const s = await live();
-      const { challengeId } = await plain(f, s, 'POST', '/v1/w3s/user/transactions/contractExecution', s.userToken, { idempotencyKey: uuid(),
-        walletId: s.walletId, sourceAddress: s.address, blockchain: NETWORKS[network].blockchain, contractAddress: tx.to, callData: tx.data, feeLevel: 'MEDIUM' });
-      if (typeof challengeId !== 'string') throw broken('Circle sent no transaction challenge');
-      await approve(f, s, challengeId);
-      const { challenge } = await poll(() => plain(f, s, 'GET', `/v1/w3s/user/challenges/${challengeId}`, s.userToken),
-        (answer: any) => ['COMPLETE', 'FAILED', 'EXPIRED'].includes(answer?.challenge?.status), `approval ${challengeId}`);
-      const id = challenge.correlationIds?.[0];
-      if (challenge.status !== 'COMPLETE' || typeof id !== 'string') throw new AgentWalletError('transaction_failed', `Circle's approval ended ${challenge.status}`);
-      const { transaction } = await poll(() => plain(f, s, 'GET', `/v1/w3s/transactions/${id}`, s.userToken),
-        (answer: any) => ['CONFIRMED', 'COMPLETE', 'FAILED', 'CANCELLED', 'DENIED'].includes(answer?.transaction?.state), `transaction ${id}`);
-      const { state, hash, errorReason } = status(id, transaction);
-      if (state !== 'CONFIRMED' && state !== 'COMPLETE') throw new AgentWalletError('transaction_failed', `Circle transaction ${id} ${state}${errorReason ? `: ${errorReason}` : ''}`);
-      if (!hash) throw broken(`Circle confirmed transaction ${id} but sent no hash`);
-      return { hash, transactionId: id };
+      const { challengeId } = await limited(plain(f, s, 'POST', '/v1/w3s/user/transactions/contractExecution', s.userToken, { idempotencyKey: uuid(),
+        walletId: s.walletId, sourceAddress: s.address, blockchain: NETWORKS[network].blockchain, contractAddress: tx.to, callData: tx.data, feeLevel: 'MEDIUM' }));
+      return settle(s, challengeId);
+    },
+    // Sends a token from the wallet, USDC unless `token` names another contract. `amount` is a decimal string in whole tokens ("0.01").
+    async transfer(tx: { to: string; amount: string; token?: string }): Promise<{ hash: Hex; transactionId: string }> {
+      const s = await live();
+      const address = /^0x[0-9a-fA-F]{40}$/;
+      if (!address.test(tx.to) || (tx.token !== undefined && !address.test(tx.token))) throw new AgentWalletError('invalid_input', 'Not an address');
+      if (!/^\d+(\.\d+)?$/.test(tx.amount) || Number(tx.amount) <= 0) throw new AgentWalletError('invalid_input', 'The amount is a positive decimal, like "0.01"');
+      const { challengeId } = await limited(plain(f, s, 'POST', '/v1/w3s/user/transactions/transfer', s.userToken, { idempotencyKey: uuid(), walletId: s.walletId,
+        sourceAddress: s.address, destinationAddress: tx.to, amounts: [tx.amount], blockchain: NETWORKS[network].blockchain, tokenAddress: tx.token ?? NETWORKS[network].usdc, feeLevel: 'MEDIUM' }));
+      return settle(s, challengeId);
+    },
+    // Asks Circle's testnet faucet to send the wallet some of a token. Circle sends it a little later: watch balance().
+    async fund(token: 'usdc' | 'eth' | 'eurc' | 'native' = 'usdc'): Promise<void> {
+      const s = await live();
+      if (network !== 'arc') throw new AgentWalletError('invalid_input', 'Circle has a faucet on testnet only');
+      await plain(f, s, 'POST', '/fund', s.userToken, { address: s.address, blockchain: NETWORKS[network].blockchain, token });
     },
     // Where a transaction stands at Circle, for one that call() gave up waiting on (its id is in that error's message).
     async transaction(id: string): Promise<TransactionStatus> {

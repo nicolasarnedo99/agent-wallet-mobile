@@ -2,7 +2,7 @@ import forge from 'node-forge';
 import { decodePaymentSignatureHeader, encodePaymentRequiredHeader, encodePaymentResponseHeader } from '@x402/core/http';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { payOnce, type Terms } from '../examples/expo-app/x402.js';
-import { AgentWalletError, createAgentWallet, isExpired, keychainStorage, memoryStorage, type Network, type Session, type Storage } from '../src/index.js';
+import { AgentWalletError, createAgentWallet, isExpired, keychainStorage, memoryStorage, searchServices, type Network, type Session, type Storage } from '../src/index.js';
 import { ARC_USDC, BASE_USDC, CODE, EMAIL, HEAD, MINED, SECRET, SHARE, SIGNATURE, WALLETS, fakeCircle, sha256, unwrapPinhash, user } from './fake-circle.js';
 
 const KEY = { arc: 'circle-agent-wallet.arc', base: 'circle-agent-wallet.base' } as const;
@@ -82,14 +82,37 @@ describe('login', () => {
     await expect(wallet.login.finish(`${HEAD.toLowerCase()}-${CODE} `)).resolves.toMatchObject({ id: 'w-arc' });
     await expect(wallet.login.finish(CODE)).rejects.toThrow('No login in progress'); // the login is used up
   });
-  it('stops at an account with no agent wallets yet, which only the Circle CLI sets up', async () => {
-    const { wallet, circle } = fresh('arc', { operation: 'bootstrap' });
+  it('creates the wallets on a first testnet login, on every testnet chain the CLI asks for, and only then looks the wallet up', async () => {
+    const { wallet, circle, storage } = fresh('arc', { operation: 'bootstrap' });
+    await wallet.login.start(EMAIL);
+    expect(await wallet.login.finish(CODE)).toMatchObject({ address: WALLETS.arc.address });
+    expect(circle.seen.initialize).toMatchObject({ accountType: 'SCA', blockchains: expect.arrayContaining(['ARC-TESTNET', 'BASE-SEPOLIA']) });
+    expect(circle.seen.initialize.blockchains).toHaveLength(9);
+    expect(circle.seen.approve.pinType).toBe('AUTO');
+    const order = circle.calls.map(call => call.replace(/\?.*/, ''));
+    expect(order.indexOf('GET /v1/w3s/user/challenges/init-1')).toBeLessThan(order.indexOf('GET /v1/w3s/wallets'));
+    expect(await storage.get(KEY.arc)).not.toBeNull();
+  }, 120_000);
+  it('takes an account Circle says is already set up (409) without a challenge', async () => {
+    const { wallet, circle } = fresh('arc', { operation: 'bootstrap', initialize: 409 });
+    await wallet.login.start(EMAIL);
+    expect(await wallet.login.finish(CODE)).toMatchObject({ address: WALLETS.arc.address });
+    expect(circle.calls.some(call => call.includes('init-1'))).toBe(false);
+  }, 120_000);
+  it('stores no session when Circle fails to create the wallets', async () => {
+    const { wallet, storage } = fresh('arc', { operation: 'bootstrap', initialize: 'FAILED' });
+    await wallet.login.start(EMAIL);
+    expect(code(await wallet.login.finish(CODE).catch(e => e))).toBe('protocol');
+    expect(await storage.get(KEY.arc)).toBeNull();
+  }, 120_000);
+  it('leaves a first mainnet login to the Circle CLI, before any code is asked for', async () => {
+    const { wallet, circle } = fresh('base', { operation: 'bootstrap' });
     const failure = await wallet.login.start(EMAIL).catch(e => e);
     expect(code(failure)).toBe('needs_cli_bootstrap');
-    expect(failure.message).toContain('circle wallet login --testnet');
+    expect(failure.message).toContain('circle wallet login');
     expect(circle.calls.some(call => call.includes('initialize'))).toBe(false);
     await expect(wallet.login.finish(CODE)).rejects.toThrow('No login in progress');
-  });
+  }, 120_000);
   it('never puts the email or the code in an error', async () => {
     const circle = fakeCircle();
     const failing: typeof fetch = async (input, init) => (String(input).endsWith('/auth/challenges')
@@ -197,6 +220,58 @@ describe('call', () => {
     const failure = await wallet.call({ to: SELLER, data: '0xabcdef' }).catch(e => e);
     expect(code(failure)).toBe('transaction_failed');
     expect(failure.message).toBe('Circle transaction t-9 FAILED: EXECUTION_REVERTED');
+  });
+});
+
+describe('transfer', () => {
+  const TO = '0x30ABfbE1Ae448515d2671D9E3C02f5Bf437d8048';
+  it('sends USDC as a Circle transaction and returns the hash once Circle says it is confirmed', async () => {
+    const { wallet, circle } = await loggedIn();
+    await expect(wallet.transfer({ to: TO, amount: '0.01' })).resolves.toEqual({ hash: MINED, transactionId: 't-9' });
+    expect(circle.seen.transfer).toMatchObject({ walletId: 'w-arc', sourceAddress: WALLETS.arc.address, destinationAddress: TO, amounts: ['0.01'],
+      blockchain: 'ARC-TESTNET', tokenAddress: ARC_USDC, feeLevel: 'MEDIUM' });
+    expect(circle.seen.transfer.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
+  });
+  it.each([['amount', { to: TO, amount: '1e3' }], ['amount', { to: TO, amount: '0' }], ['address', { to: '0x1234', amount: '1' }]] as const)(
+    'refuses a bad %s without calling Circle', async (_what, bad) => {
+      const { wallet, circle } = await loggedIn();
+      expect(code(await wallet.transfer(bad).catch(e => e))).toBe('invalid_input');
+      expect(circle.calls).toEqual([]);
+    });
+  it("names Circle's spending limit when it refuses the transfer", async () => {
+    const { wallet } = await loggedIn('arc', { overLimit: true });
+    expect(code(await wallet.transfer({ to: TO, amount: '0.01' }).catch(e => e))).toBe('limit_exceeded');
+  });
+});
+
+describe('fund', () => {
+  it("asks Circle's testnet faucet for USDC to the wallet, or the token named", async () => {
+    const { wallet, circle } = await loggedIn();
+    await wallet.fund();
+    expect(circle.seen.fund).toEqual({ address: WALLETS.arc.address, blockchain: 'ARC-TESTNET', token: 'usdc' });
+    await wallet.fund('eurc');
+    expect(circle.seen.fund.token).toBe('eurc');
+  });
+  it('says there is no faucet on mainnet, without calling Circle', async () => {
+    const { wallet, circle } = await loggedIn('base');
+    expect(code(await wallet.fund().catch(e => e))).toBe('invalid_input');
+    expect(circle.calls).toEqual([]);
+  });
+});
+
+describe('searchServices', () => {
+  it("asks Circle's marketplace with no session and trims each service to what an app shows", async () => {
+    let asked = ''; let sent: RequestInit | undefined;
+    const answer = { x402Version: 2, items: [{ resource: 'https://seller.example/paid', type: 'http', metadata: { provider: { name: 'Seller', category: 'food' }, method: 'GET', description: 'A paid thing' },
+      accepts: [{ amount: '10000', network: 'eip155:8453', extra: { name: 'USDC' } }] }, { broken: true }] };
+    const found = await searchServices({ query: 'restaurants', limit: 5 }, (async (input: string | URL | Request, init?: RequestInit) => { asked = String(input); sent = init; return new Response(JSON.stringify(answer)); }) as typeof fetch);
+    expect(asked).toBe('https://api.circle.com/v2/x402/discovery/resources?query=restaurants&limit=5&siwx=false');
+    expect(sent?.headers).toBeUndefined();
+    expect(found).toEqual([{ url: 'https://seller.example/paid', method: 'GET', description: 'A paid thing', provider: 'Seller', accepts: [{ amount: '10000', network: 'eip155:8453' }] }]);
+  });
+  it('fails loud when Circle answers with something else', async () => {
+    expect(code(await searchServices({}, (async () => new Response('{"items":null}')) as typeof fetch).catch(e => e))).toBe('protocol');
+    expect(code(await searchServices({}, (async () => new Response('no', { status: 503 })) as typeof fetch).catch(e => e))).toBe('http');
   });
 });
 

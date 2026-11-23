@@ -53,12 +53,12 @@ export function unwrapPinhash(encrypted: string): string {
   return unaes(key.toString('base64'), pinhash_struct).pinhash;
 }
 
-export function fakeCircle(network: Network = 'arc', options: { operation?: 'login' | 'bootstrap'; transaction?: object; deactivate?: number; overLimit?: boolean } = {}) {
+export function fakeCircle(network: Network = 'arc', options: { operation?: 'login' | 'bootstrap'; transaction?: object; deactivate?: number; overLimit?: boolean; initialize?: 409 | 'FAILED' } = {}) {
   const { operation = 'login', transaction = { state: 'CONFIRMED', txHash: MINED }, deactivate = 204 } = options;
   const proxy = NETWORKS[network].proxy;
   const wallet = WALLETS[network];
   const calls: string[] = [];
-  const seen: { clientKey?: string; deviceId?: string; typedData?: any; approve?: any; execution?: any; polls?: number; deactivate?: any } = {};
+  const seen: { clientKey?: string; deviceId?: string; typedData?: any; approve?: any; execution?: any; polls?: number; deactivate?: any; transfer?: any; fund?: any; initialize?: any } = {};
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
   const fetch = async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = new URL(String(input));
@@ -76,8 +76,8 @@ export function fakeCircle(network: Network = 'arc', options: { operation?: 'log
       expect(headers.get('x-device-id')).toBe(seen.deviceId);
     }
     const asUser = () => expect(headers.get('x-user-token')).toBe(user.token);
-    // A signing challenge (sig-1) answers with the signature; a transaction challenge (tx-1) answers with no encrypted body, as Circle may.
-    const challenge = /^(GET|POST) \/v1\/w3s\/sdk\/user\/challenges\/(sig-1|tx-1)(\/approve)?$/.exec(`${method} ${path}`);
+    // A signing challenge (sig-1) answers with the signature; a transaction (tx-1) or first-login (init-1) challenge answers with no encrypted body, as Circle may.
+    const challenge = /^(GET|POST) \/v1\/w3s\/sdk\/user\/challenges\/(sig-1|tx-1|init-1)(\/approve)?$/.exec(`${method} ${path}`);
     if (challenge?.[3]) {
       seen.approve = unaes(user.key, body);
       return challenge[2] === 'sig-1' ? json(200, { data: { encrypt: aes(user.key, { data: { signature: SIGNATURE } }) } }) : json(200, {});
@@ -125,6 +125,19 @@ export function fakeCircle(network: Network = 'arc', options: { operation?: 'log
       case 'POST /v1/w3s/user/transactions/contractExecution':
         asUser(); seen.execution = JSON.parse(body);
         return json(200, { data: { challengeId: 'tx-1' } });
+      case 'POST /v1/w3s/user/transactions/transfer':
+        asUser(); seen.transfer = JSON.parse(body);
+        if (options.overLimit) return json(400, { message: 'spend limit exceeded' });
+        return json(200, { data: { challengeId: 'tx-1' } });
+      case 'POST /fund':
+        asUser(); seen.fund = JSON.parse(body);
+        return json(200, {});
+      case 'POST /v1/w3s/user/initialize':
+        asUser(); seen.initialize = JSON.parse(body);
+        return options.initialize === 409 ? json(409, { message: 'already initialized' }) : json(200, { data: { challengeId: 'init-1' } });
+      case 'GET /v1/w3s/user/challenges/init-1':
+        asUser();
+        return json(200, { data: { challenge: { status: options.initialize === 'FAILED' ? 'FAILED' : 'COMPLETE' } } });
       case 'GET /v1/w3s/user/challenges/tx-1': // not yet, then done, as Circle answers while its bundler works
         asUser(); seen.polls = (seen.polls ?? 0) + 1;
         return json(200, { data: { challenge: seen.polls === 1 ? { status: 'IN_PROGRESS' } : { status: 'COMPLETE', correlationIds: ['t-9'] } } });
