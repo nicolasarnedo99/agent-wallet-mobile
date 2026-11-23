@@ -125,7 +125,7 @@ The signature Circle returns for the wallet was 65 bytes in the two cases measur
 
 ## Not covered
 
-Three more calls this library makes were read in the CLI's source and have run against the stand-in only:
+Three more calls this library makes were read in the CLI's source. The search has run against Circle; the transfer and the faucet have run against the stand-in only:
 
 | Call | Request | Response | Source |
 |---|---|---|---|
