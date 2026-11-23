@@ -39,6 +39,13 @@ await agent.fund();
 // Paid services in Circle's Agent Marketplace. Public: it needs no login.
 const services = await searchServices({ query: 'restaurants' });
 
+// Circle's spending limits, mainnet only. Reading takes the agent's session; changing takes the owner's own emailed code.
+await agent.limits.read();            // [{ perTx, daily, weekly, monthly, origin: 'DEFAULT' | 'CUSTOM', ... }]
+await agent.limits.owner.start(email);
+await agent.limits.owner.finish(ownerCode);
+await agent.limits.set({ perTx: '0.5', daily: '2', weekly: '10', monthly: '20' });
+await agent.limits.reset();           // back to Circle's default
+
 await agent.logout();                 // revoke this session at Circle; logout('all') revokes every device's
 ```
 
@@ -56,7 +63,7 @@ That makes the session a bearer credential. It is five values (`userToken`, `enc
 
 The library never stores, logs or returns the email or the code. The email lives in memory between `login.start` and `login.finish`; the code goes into one encrypted request. Errors carry Circle's HTTP status and numeric code, and Circle's own message only outside a login, where it could echo either.
 
-On testnet Circle signs whatever typed data a valid session sends: its spending limits exist on mainnet only. There they do cover x402 payments. On Base mainnet, with a limit of 0.005 USDC per payment set through the CLI, Circle refused to sign a 0.01 USDC payment (a 400, "spend limit exceeded"), opened no challenge and moved no funds. That test was run from the Nest app's side on 24 Nov 2026, not from this package, which only maps the refusal to `limit_exceeded`. Setting limits is not in this client, so whatever limit you want on testnet, or beyond Circle's, has to run in your app before `signTypedData` is called. `examples/expo-app/x402.ts` shows the shape: the 402's scheme, network, token, amount and payee are checked against what the app expects, and a 402 that fails sends nothing to Circle. The tests cover that refusal.
+On testnet Circle signs whatever typed data a valid session sends: its spending limits exist on mainnet only. There they do cover x402 payments. On Base mainnet, with a limit of 0.005 USDC per payment set through the CLI, Circle refused to sign a 0.01 USDC payment (a 400, "spend limit exceeded"), opened no challenge and moved no funds. That test was run from the Nest app's side on 24 Nov 2026, not from this package, which only maps the refusal to `limit_exceeded`. Whatever limit you want on testnet, or beyond Circle's, has to run in your app before `signTypedData` is called. `examples/expo-app/x402.ts` shows the shape: the 402's scheme, network, token, amount and payee are checked against what the app expects, and a 402 that fails sends nothing to Circle. The tests cover that refusal.
 
 Two smaller points. The wallet is a smart contract account, so its signatures verify through ERC-1271 rather than `ecrecover`, and only once the wallet is deployed; a new wallet needs one first transaction of any kind before a seller's facilitator will accept its signature. And requests go out with the runtime's own User-Agent. The library never claims to be Circle's CLI, and if Circle's proxy starts refusing other clients, that is a stop, not something to work around.
 
@@ -79,7 +86,7 @@ A session cannot be refreshed. The CLI never keeps a refresh token and neither d
 
 A new account's first login creates its wallets (Circle calls it bootstrap). On Arc testnet this client now does that itself, but only against the stand-in so far: no brand-new account has logged in through it. On Base mainnet it still stops with `needs_cli_bootstrap`; run `circle wallet login` once, then log in here. Accounts from before Circle's current login flow use an older path this client does not implement either.
 
-It signs typed data, sends contract calls and token transfers, asks the testnet faucet and searches the marketplace. It has no `signMessage`, no raw transactions, no Gateway, and it cannot read or set spending limits. `searchServices()`, `transfer()` and `fund()` have each run against Circle once, on 24 Nov 2026 (see [On-chain](#on-chain)). `call()` waits at most a minute for the approval and a minute for the transaction. A transaction that outlasts its minute throws with its id in the message, and `transaction(id)` reports where it stands.
+It signs typed data, sends contract calls and token transfers, asks the testnet faucet and searches the marketplace. It has no `signMessage`, no raw transactions and no Gateway. It reads, sets and resets Circle's transfer limits on Base mainnet (`limits`), but not allow or block lists, and those limit calls are tested against the stand-in only. The owner's token for changing limits is kept in memory for ten minutes and never stored; `limits.set()` does not replace an existing custom limit, so call `limits.reset()` first. `searchServices()`, `transfer()` and `fund()` have each run against Circle once, on 24 Nov 2026 (see [On-chain](#on-chain)). `call()` waits at most a minute for the approval and a minute for the transaction. A transaction that outlasts its minute throws with its id in the message, and `transaction(id)` reports where it stands.
 
 Only an iPhone has run this code. Android goes through the same `react-native-keychain` call and should work, but nobody has tried. The approval request still carries the device description the CLI sends (`WebSDK`, `Desktop`), because that is the only value known to pass.
 

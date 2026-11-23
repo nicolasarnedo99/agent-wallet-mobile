@@ -133,4 +133,17 @@ Three more calls this library makes were read in the CLI's source. Each has run 
 | `POST /fund` (testnet proxy, no `/v1/w3s`) | `{address, blockchain, token: "usdc" \| "eth" \| "eurc" \| "native"}` | unused; the tokens arrive later | `commands/wallet/fund.ts:391` |
 | `GET https://api.circle.com/v2/x402/discovery/resources?query=&category=&limit=&offset=&siwx=false` | no token | `{items: [{resource, metadata: {provider, method, description}, accepts: [{amount, network}]}], pagination}` | `commands/services/search.ts:88` |
 
-The CLI does more than this library: an older login path for accounts from before Auth V2 (`POST /v1/w3s/users/email/token`, then `POST /v1/w3s/sdk/users/email/verifyOTP`), passkeys, fee estimates, cancelling and accelerating transactions, spending policies (mainnet, through `/proxy/live-user`) and Gateway. Those were read only as far as needed to leave them out.
+## Spending limits
+
+Mainnet only. These routes belong to the service itself, at `https://agentic-wallet.circle.com`, outside every proxy. Read from the CLI's source; from this library they have run against the stand-in only.
+
+| Call | Token | Request | Response | Source |
+|---|---|---|---|---|
+| `GET /v1/policy/limit?wallet_id=&wallet_address=&blockchain=` | the agent's | none | `{wallet_id, policies: [{policy_type, rule_type, blockchain?, per_tx_limit?, daily_limit?, weekly_limit?, monthly_limit?, addresses?, origin: "DEFAULT" \| "CUSTOM", policy_id?}]}`; an empty limit means no cap | `commands/wallet/limit.ts:218` |
+| `GET /v1/policy/budget?wallet_address=` (lowercased) | the agent's | none | `{policies: {<type>: {per_tx_limit, daily_limit, daily_remaining, weekly_limit, weekly_remaining, monthly_limit, monthly_remaining, origin}}}` | `commands/wallet/budget.ts:157` |
+| `POST /v1/policy` | the owner's | `{wallet_id, blockchain, policy_type: "STABLECOIN_TRANSFER", rule_type: "TRANSFER_LIMIT", params: {per_tx, daily, weekly, monthly}}`, each amount at least the one before | the new policy; 409 when a custom one exists | `commands/wallet/limit-set.ts:304,468` |
+| `DELETE /v1/policy/{id}` | the owner's | none | 404 when already gone | `commands/wallet/limit-reset.ts:351` |
+
+The owner's token comes from the same email-code login, sent to `https://agentic-wallet.circle.com/proxy/live-user` instead of the agent's proxy (`auth-flow.ts:937`, `config.ts:234`). Circle may answer it as a `bootstrap`; nothing is initialised and no wallet is looked up. The CLI keeps the token in memory for one command; this library keeps it for ten minutes. With no custom limit Circle applies its default, which the CLI's help text gives as 100 USDC a month.
+
+The CLI does more than this library: allow and block lists for recipients and contracts, an older login path for accounts from before Auth V2 (`POST /v1/w3s/users/email/token`, then `POST /v1/w3s/sdk/users/email/verifyOTP`), passkeys, fee estimates, cancelling and accelerating transactions and Gateway. Those were read only as far as needed to leave them out.
