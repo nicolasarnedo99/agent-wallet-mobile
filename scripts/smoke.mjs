@@ -4,6 +4,7 @@
 //   npm run smoke            # the payment
 //   npm run smoke -- --call  # the payment, then a zero USDC approve through call() and transaction()
 //   npm run smoke -- --fund --transfer   # also ask the faucet for USDC, and transfer 0.01 USDC to the payee
+//   npm run smoke -- --fund --deploy     # for a brand-new wallet: faucet first, then the transaction that deploys it, then the payment
 //   npm run smoke -- --base --call --transfer --limits   # Base mainnet, REAL USDC: the payment costs 0.01, the transfer goes to
 //                                                        # the wallet itself, and --limits sets a small cap, sees Circle refuse, resets
 //
@@ -67,6 +68,23 @@ async function main() {
     result.balanceBefore = await agent.balance();
     console.log(`balance  ${result.balanceBefore} USDC`);
 
+    if (process.argv.includes('--fund')) {
+      const before = Number(await agent.balance());
+      await agent.fund();
+      let now = before;
+      for (let i = 0; i < 30 && now <= before; i++) { await new Promise(done => setTimeout(done, 2000)); now = Number(await agent.balance()); }
+      result.fund = now > before ? `arrived: balance ${before} -> ${now}` : 'accepted by Circle, nothing arrived within a minute';
+      console.log(`fund     ${result.fund}`);
+    }
+    if (process.argv.includes('--deploy')) {
+      const deployed = await agent.deploy();
+      const deployBlock = await onChain(deployed.hash, 'Approval', args => same(args.owner, wallet.address) && same(args.spender, wallet.address) && args.value === 0n);
+      const code = await chain.getCode({ address: wallet.address });
+      if (!code || code === '0x') throw new Error(`${deployed.hash} succeeded but the wallet still has no code`);
+      result.deploy = { hash: deployed.hash, block: deployBlock };
+      console.log(`deploy   ok: ${deployed.hash} (block ${deployBlock}, the wallet now has code on-chain)`);
+    }
+
     const paid = await payOnce(RESOURCE, await agent.x402Signer(), TERMS);
     if (!paid.transaction) throw new Error('The seller answered 200 but named no transaction');
     const block = await onChain(paid.transaction, 'Transfer', args => same(args.from, wallet.address) && same(args.to, PAYEE) && args.value === 10_000n);
@@ -82,14 +100,6 @@ async function main() {
       result.call = { hash: sent.hash, block: callBlock, transactionId: sent.transactionId, state: status.state };
       console.log(`call     ok: ${sent.hash} (block ${callBlock}, approve 0 USDC), Circle transaction ${sent.transactionId} is ${status.state}`);
       if (status.hash !== sent.hash) throw new Error(`transaction() reports hash ${status.hash}, call() returned ${sent.hash}`);
-    }
-    if (process.argv.includes('--fund')) {
-      const before = Number(await agent.balance());
-      await agent.fund();
-      let now = before;
-      for (let i = 0; i < 30 && now <= before; i++) { await new Promise(done => setTimeout(done, 2000)); now = Number(await agent.balance()); }
-      result.fund = now > before ? `arrived: balance ${before} -> ${now}` : 'accepted by Circle, nothing arrived within a minute';
-      console.log(`fund     ${result.fund}`);
     }
     if (process.argv.includes('--transfer')) {
       const to = BASE ? wallet.address : PAYEE; // on mainnet the money goes back to the wallet it came from

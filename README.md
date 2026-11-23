@@ -35,6 +35,7 @@ const { hash } = await agent.call({ to: contract, data: calldata });
 // Send USDC (or another token, by its contract address), and top up from Circle's testnet faucet.
 await agent.transfer({ to: recipient, amount: '0.01' });
 await agent.fund();
+await agent.deploy();                 // once, for a brand-new wallet: Circle will not sign for it until it exists on-chain
 
 // Paid services in Circle's Agent Marketplace. Public: it needs no login.
 const services = await searchServices({ query: 'restaurants' });
@@ -84,7 +85,7 @@ The API is undocumented. Every call was read out of the CLI's published source (
 
 A session cannot be refreshed. The CLI never keeps a refresh token and neither does this client, so when the session expires (the `exp` of the user token) the user logs in again with a new code.
 
-A new account's first login creates its wallets (Circle calls it bootstrap). On Arc testnet this client does that itself: on 24 Nov 2026 a never-used email logged in through it with no CLI involved and got a new wallet, `0x5a5d4af9730fd92f4db96a1c3f5b980a9879e0f6`. That wallet starts empty and undeployed, so Circle refuses to sign for it ("Cannot generate a signature from an undeployed wallet") until it has sent one transaction: call `fund()`, then a `transfer()` or `call()`, before the first payment. On Base mainnet it still stops with `needs_cli_bootstrap`; run `circle wallet login` once, then log in here. Accounts from before Circle's current login flow use an older path this client does not implement either.
+A new account's first login creates its wallets (Circle calls it bootstrap). On Arc testnet this client does that itself: on 24 Nov 2026 a never-used email logged in through it with no CLI involved and got a new wallet, `0x5a5d4af9730fd92f4db96a1c3f5b980a9879e0f6`. That wallet starts empty and undeployed, so Circle refuses to sign for it ("Cannot generate a signature from an undeployed wallet") until it has sent one transaction. `deploy()` sends one that moves nothing, a zero USDC approve to the wallet itself; it is tested against the stand-in only. On Base mainnet it still stops with `needs_cli_bootstrap`; run `circle wallet login` once, then log in here. Accounts from before Circle's current login flow use an older path this client does not implement either.
 
 It signs typed data, sends contract calls and token transfers, asks the testnet faucet and searches the marketplace. It has no `signMessage`, no raw transactions and no Gateway. It reads, sets and resets Circle's transfer limits on Base mainnet (`limits`), but not allow or block lists. The owner's token for changing limits is kept in memory for ten minutes and never stored; `limits.set()` does not replace an existing custom limit, so call `limits.reset()` first. `searchServices()`, `transfer()` and `fund()` have each run against Circle once, on 24 Nov 2026 (see [On-chain](#on-chain)). `call()` waits at most a minute for the approval and a minute for the transaction. A transaction that outlasts its minute throws with its id in the message, and `transaction(id)` reports where it stands.
 
