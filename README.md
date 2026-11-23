@@ -79,7 +79,7 @@ A session cannot be refreshed. The CLI never keeps a refresh token and neither d
 
 A new account's first login creates its wallets (Circle calls it bootstrap). On Arc testnet this client now does that itself, but only against the stand-in so far: no brand-new account has logged in through it. On Base mainnet it still stops with `needs_cli_bootstrap`; run `circle wallet login` once, then log in here. Accounts from before Circle's current login flow use an older path this client does not implement either.
 
-It signs typed data, sends contract calls and token transfers, asks the testnet faucet and searches the marketplace. It has no `signMessage`, no raw transactions, no Gateway, and it cannot read or set spending limits. `searchServices()` has run against Circle's marketplace (24 Nov 2026). `transfer()` and `fund()` are tested against the stand-in only: neither has been sent to Circle from this package. `call()` waits at most a minute for the approval and a minute for the transaction. A transaction that outlasts its minute throws with its id in the message, and `transaction(id)` reports where it stands.
+It signs typed data, sends contract calls and token transfers, asks the testnet faucet and searches the marketplace. It has no `signMessage`, no raw transactions, no Gateway, and it cannot read or set spending limits. `searchServices()`, `transfer()` and `fund()` have each run against Circle once, on 24 Nov 2026 (see [On-chain](#on-chain)). `call()` waits at most a minute for the approval and a minute for the transaction. A transaction that outlasts its minute throws with its id in the message, and `transaction(id)` reports where it stands.
 
 Only an iPhone has run this code. Android goes through the same `react-native-keychain` call and should work, but nobody has tried. The approval request still carries the device description the CLI sends (`WebSDK`, `Desktop`), because that is the only value known to pass.
 
@@ -96,6 +96,8 @@ Sent by this package, run from Node against Circle's testnet proxy:
 - An x402 payment of 0.01 USDC, signed through Circle and settled with the smart-account form of `transferWithAuthorization` (`0xcf092995`): [`0x4bb1e202…c51d`](https://explorer.testnet.arc.io/tx/0x4bb1e202471053a2303743172cec4395133d77998c0669c8b3f8767fb860c51d?tab=token_transfers)
 - A contract call, a zero USDC `approve`, sent through EntryPoint v0.7 with the gas sponsored: [`0xe9cb7dd5…0ecb`](https://explorer.testnet.arc.io/tx/0xe9cb7dd52ad721be8c1c0aef6b1e61772921397d2098276e37157f814b4c0ecb)
 - A logout, after which Circle's proxy answered the old session with 403.
+- On 24 Nov 2026, a token transfer of 0.01 USDC through EntryPoint v0.7: [`0xe258283f…3546`](https://explorer.testnet.arc.io/tx/0xe258283f657f508ea4077026858939d14a7014c3be8dae417263b5ad7bf43546?tab=token_transfers), beside a second x402 payment, [`0x1e6a3b87…f0b7`](https://explorer.testnet.arc.io/tx/0x1e6a3b877865d456ab8b75b32dd44b09d62c8e8b8e56a37cbdc6ddab0704f0b7?tab=token_transfers)
+- In the same run, a faucet request: the wallet's balance rose by 20 USDC (18.85 before, 38.83 after the two 0.01 payments). I did not find the faucet's own transaction.
 
 Sent by an iPhone, from the same client while it still lived inside Nest:
 
