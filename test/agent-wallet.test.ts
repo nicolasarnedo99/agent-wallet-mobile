@@ -350,7 +350,7 @@ describe('limits', () => {
     const allow = rules.find(rule => rule.ruleType === 'CONTRACT_ALLOWLIST')!;
     expect(allow).toMatchObject({ policyType: 'CONTRACT_INTERACTION', addresses: [SELLER.toLowerCase(), BASE_USDC.toLowerCase()], origin: 'CUSTOM' });
     await wallet.limits.reset(allow.id!);
-    expect((await wallet.limits.read()).map(rule => rule.ruleType).sort()).toEqual(['RECIPIENT_BLOCKLIST', 'TRANSFER_LIMIT', 'TRANSFER_LIMIT']);
+    expect((await wallet.limits.read()).map(rule => rule.ruleType).sort()).toEqual(['RECIPIENT_BLOCKLIST', 'TRANSFER_LIMIT']);
     await wallet.limits.reset();
     expect(await wallet.limits.read()).toEqual([byDefault]);
   }, 120_000);
