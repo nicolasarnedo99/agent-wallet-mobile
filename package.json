@@ -1,5 +1,5 @@
 {
-  "name": "circle-agent-wallet-mobile",
+  "name": "agent-wallet-mobile",
   "version": "0.1.0",
   "description": "Unofficial TypeScript client for Circle Agent Wallets on React Native and Node. Not affiliated with or endorsed by Circle.",
   "license": "Apache-2.0",

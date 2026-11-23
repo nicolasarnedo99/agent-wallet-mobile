@@ -3,7 +3,7 @@
 // Only @x402/core/client is imported: @x402/fetch pulls in @x402/core/http, whose dynamic import() Hermes cannot compile.
 import { x402Client, x402HTTPClient } from '@x402/core/client';
 import { registerExactEvmScheme } from '@x402/evm/exact/client';
-import type { X402Signer } from '../../src/index.js'; // in an app: from 'circle-agent-wallet-mobile'
+import type { X402Signer } from '../../src/index.js'; // in an app: from 'agent-wallet-mobile'
 
 // What the app is willing to pay: one token on one chain (named as its EIP-712 domain), up to maxAmount base units, to one payee.
 export type Terms = { network: `${string}:${string}`; asset: string; name: string; version: string; maxAmount: bigint; payTo: string };

@@ -6,7 +6,7 @@ import 'react-native-get-random-values'; // crypto.getRandomValues, before anyth
 import { useEffect, useMemo, useState } from 'react';
 import { Button, SafeAreaView, Text, TextInput } from 'react-native';
 import * as Keychain from 'react-native-keychain';
-import { createAgentWallet, keychainStorage, type WalletInfo } from 'circle-agent-wallet-mobile';
+import { createAgentWallet, keychainStorage, type WalletInfo } from 'agent-wallet-mobile';
 import { payOnce, type Terms } from './x402';
 
 // What this app agrees to pay, checked against every 402 before Circle is asked to sign. Put your own seller and payee here.

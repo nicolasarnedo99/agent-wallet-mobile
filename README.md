@@ -1,4 +1,4 @@
-# circle-agent-wallet-mobile
+# agent-wallet-mobile
 
 A small TypeScript client that logs in to a Circle Agent Wallet and signs with it from a React Native app, with no CLI on the device and no server in between. It also runs in Node.
 
@@ -8,12 +8,12 @@ The code is lifted out of Nest, an iPhone app where it paid for x402 resources f
 
 ## Quick start
 
-It is not on npm. Install it from a checkout (`npm install ../circle-agent-wallet-mobile` after `npm run build`), together with `viem`, and in React Native `react-native-keychain` and `react-native-get-random-values`.
+It is not on npm. Install it from a checkout (`npm install ../agent-wallet-mobile` after `npm run build`), together with `viem`, and in React Native `react-native-keychain` and `react-native-get-random-values`.
 
 ```ts
 import 'react-native-get-random-values';
 import * as Keychain from 'react-native-keychain';
-import { createAgentWallet, keychainStorage } from 'circle-agent-wallet-mobile';
+import { createAgentWallet, keychainStorage } from 'agent-wallet-mobile';
 
 const agent = createAgentWallet({ network: 'arc', storage: keychainStorage(Keychain) });
 
