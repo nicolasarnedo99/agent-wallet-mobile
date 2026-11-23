@@ -10,7 +10,7 @@
   "dependencies": {
     "@x402/core": "2.31.0",
     "@x402/evm": "2.31.0",
-    "agent-wallet-mobile": "file:../../agent-wallet-mobile-0.1.0.tgz",
+    "agent-wallet-mobile": "^0.2.0",
     "expo": "~58.0.26",
     "react": "19.3.0",
     "react-native": "0.88.1",

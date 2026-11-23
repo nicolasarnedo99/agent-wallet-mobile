@@ -2,12 +2,9 @@
 
 One screen: log in with the emailed code, read the USDC balance, pay one x402 resource 0.01 USDC on Arc testnet, log out. `x402.ts` holds the payment and the checks that run before Circle is asked to sign; `App.tsx` is the screen.
 
-It needs its own build, not Expo Go, because `react-native-keychain` is a native module. The library is installed from a tarball of this repository, so the app uses the package exactly as it would ship.
+It needs its own build, not Expo Go, because `react-native-keychain` is a native module. The library comes from npm, as it would in any app.
 
 ```
-# in the repository root
-npm install && npm run build && npm pack
-
 cd examples/expo-app
 npm install
 ```
