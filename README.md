@@ -78,7 +78,24 @@ Only an iPhone has run this code. Android goes through the same `react-native-ke
 
 Making the RSA-2048 login key in pure JavaScript is slow: about 22 seconds in Node with the JIT off, used as a stand-in for a phone's engine. It was not timed on the iPhone. Call `login.prepare()` when the email field gets focus so the wait hides behind typing. The key is made in 50 ms slices with a `setTimeout` between them. That is deliberate: node-forge's own async generation chains `setImmediate`, which React Native 0.88 runs as a microtask, and the app froze until the key was done.
 
-Last, what has and has not run for real. On 23 Nov 2026 the built package ran against Circle from Node on Arc testnet (`npm run smoke`): login, wallet, balance, one x402 payment, `call()`, `transaction()` and `logout('local')`, with both transactions checked on-chain and the old session refused afterwards. The hashes are in [docs/FOR-CIRCLE.md](docs/FOR-CIRCLE.md). On a phone, the login, balance and typed-data signing code ran from Nest on an iPhone, where it lived as one file; this package itself has only been built and installed there. Nothing from this package has run on Base mainnet, and `logout('all')` has never been sent to Circle.
+Last, what has and has not run for real. On 23 Nov 2026 the built package ran against Circle from Node on Arc testnet (`npm run smoke`): login, wallet, balance, one x402 payment, `call()`, `transaction()` and `logout('local')`, with both transactions checked on-chain and the old session refused afterwards. The hashes are under [On-chain](#on-chain). On a phone, the login, balance and typed-data signing code ran from Nest on an iPhone, where it lived as one file; this package itself has only been built and installed there. Nothing from this package has run on Base mainnet, and `logout('all')` has never been sent to Circle.
+
+## On-chain
+
+Everything is from 23 Nov 2026, on one account: agent wallet `0x7286ec1ec69b477bba05ce28a21b1e03748b7765` on Arc testnet and `0xece745ef9d38a03473a5adafa6b71951170448d4` on Base mainnet. Each transaction was checked against the chain's RPC.
+
+Sent by this package, run from Node against Circle's testnet proxy:
+
+- An x402 payment of 0.01 USDC, signed through Circle and settled with the smart-account form of `transferWithAuthorization` (`0xcf092995`): [`0x4bb1e202…c51d`](https://explorer.testnet.arc.io/tx/0x4bb1e202471053a2303743172cec4395133d77998c0669c8b3f8767fb860c51d?tab=token_transfers)
+- A contract call, a zero USDC `approve`, sent through EntryPoint v0.7 with the gas sponsored: [`0xe9cb7dd5…0ecb`](https://explorer.testnet.arc.io/tx/0xe9cb7dd52ad721be8c1c0aef6b1e61772921397d2098276e37157f814b4c0ecb)
+- A logout, after which Circle's proxy answered the old session with 403.
+
+Sent by an iPhone, from the same client while it still lived inside Nest:
+
+- Two 0.01 USDC payments on Arc testnet: [`0xe65982f0…c803`](https://explorer.testnet.arc.io/tx/0xe65982f0a2548aac3df2fd9fccd46dcb681e330c0a4e8465261b7bf386d7c803?tab=token_transfers) and [`0x93e54e3e…b09e`](https://explorer.testnet.arc.io/tx/0x93e54e3e3b55f212e99954ba6c74183dfb170d2f908b4b708b58cc2e6264b09e?tab=token_transfers)
+- 0.01 USDC on Base mainnet to Agentic Reservations, a seller from Circle's Agent Marketplace: [`0xf5266222…4d65`](https://basescan.org/tx/0xf526622256757407cccee3499161a4eebad77d5b3fdc3433cfe3079dda394d65)
+
+Sent by Circle's CLI first, to learn how the wallets behave: the transactions that deployed each wallet ([Arc](https://explorer.testnet.arc.io/tx/0xc85d4380752a82f07832364b3fb5c2d721ee7a5e0decb14a97a297e657184ce8), [Base](https://basescan.org/tx/0x23a68448ace4b365ed192d5a13e4df6adefe633200f4fdff83a733a0125e9029)), a `circle services pay` on each network ([Arc](https://explorer.testnet.arc.io/tx/0x3e56973fa7779d1d989ff2c109134c2702d22875190a16b9c44c2c48ae093cb9?tab=token_transfers), [Base](https://basescan.org/tx/0xb7322949cdbef30a2ca20eb55a87944388f7c77290fe3ac1be5b97058e771823)), and a contract call that minted an ERC-1155 token to the Arc wallet ([`0x7fe9f47c…5e6a`](https://explorer.testnet.arc.io/tx/0x7fe9f47c4fc0b5f1fb3166131a6a2b64cd85acf6fcf1860ba51260b5c09f5e6a)).
 
 ## Development
 
@@ -87,7 +104,7 @@ npm install
 npm test            # vitest, against a stand-in for Circle's proxy; no network
 npm run typecheck
 npm run build       # dist/
-npm run smoke       # live, on Arc testnet: asks for your email and code, pays a seller of mine 0.01 USDC
+npm run smoke       # live, on Arc testnet: asks for your email and code, pays the seller in SMOKE_URL 0.01 USDC
 ```
 
 The fake in `test/fake-circle.ts` is written with Node's own crypto from the CLI's source, so the library's AES, RSA and PIN code is checked against a second implementation rather than against itself. The library itself imports no Node built-ins.
