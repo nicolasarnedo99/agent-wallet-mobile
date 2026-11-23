@@ -1,0 +1,19 @@
+circle-agent-wallet-mobile
+Copyright 2026 Nicolas Arnedo
+
+This is an unofficial, independent project. It is not affiliated with, sponsored
+by or endorsed by Circle. "Circle" and "USDC" are trademarks of their owner and
+are used here only to say what this software talks to.
+
+The protocol logic in this software (the Auth V2 email-code login, the AES-GCM
+framing of the /sdk/ calls, the login envelope, the PIN derivation and the
+approval of signing challenges) was ported from the TypeScript source of:
+
+  @circle-fin/cli 1.4.0
+  Copyright 2026 Circle Internet Group, Inc.
+  Licensed under the Apache License, Version 2.0
+  https://www.npmjs.com/package/@circle-fin/cli
+
+That source ships inside the npm package, in the source map of dist/index.js.
+No file was copied whole; the code here was rewritten for React Native on
+node-forge and @noble, and differs throughout.
