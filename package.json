@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "description": "Unofficial TypeScript client for Circle Agent Wallets on React Native and Node. Not affiliated with or endorsed by Circle.",
   "license": "Apache-2.0",
-  "private": true,
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -15,7 +14,7 @@
   },
   "files": [
     "dist",
-    "docs",
+    "docs/PROTOCOL.md",
     "LICENSE",
     "NOTICE"
   ],
@@ -24,7 +23,8 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "smoke": "npm run build && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --env-file-if-exists=.env.local scripts/smoke.mjs"
+    "smoke": "npm run build && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --env-file-if-exists=.env.local scripts/smoke.mjs",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@noble/ciphers": "1.3.0",
@@ -42,5 +42,16 @@
     "typescript": "5.9.3",
     "viem": "2.56.3",
     "vitest": "5.0.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nicolasarnedo99/agent-wallet-mobile.git"
+  },
+  "homepage": "https://github.com/nicolasarnedo99/agent-wallet-mobile#readme",
+  "keywords": [
+    "react-native",
+    "x402",
+    "agent-wallet",
+    "usdc"
+  ]
 }
