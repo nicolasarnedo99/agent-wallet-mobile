@@ -135,7 +135,7 @@ Three more calls this library makes were read in the CLI's source. Each has run 
 
 ## Spending limits
 
-Mainnet only. These routes belong to the service itself, at `https://agentic-wallet.circle.com`, outside every proxy. Read from the CLI's source; from this library they have run against the stand-in only.
+Mainnet only. These routes belong to the service itself, at `https://agentic-wallet.circle.com`, outside every proxy. Read from the CLI's source, and run from this library against Circle on Base mainnet on 24 Nov 2026. Over a limit, Circle answers the signing or transfer request itself with 400, code 136001, "spend limit exceeded".
 
 | Call | Token | Request | Response | Source |
 |---|---|---|---|---|
