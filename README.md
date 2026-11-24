@@ -4,7 +4,7 @@ A small TypeScript client that logs in to a Circle Agent Wallet and signs with i
 
 **Unofficial.** This project is not affiliated with, sponsored by or endorsed by Circle. It talks to the same backend that Circle's own CLI (`@circle-fin/cli` 1.4.0) talks to, an API Circle has not documented for outside use and can change at any time. Read [Known gaps](#known-gaps) before relying on it for anything.
 
-The code is lifted out of Nest, an iPhone app where it paid for x402 resources from an agent wallet on Arc testnet. This package is that client on its own, with logout added and the app taken away. Its tests run against a stand-in for Circle's proxy. The built package has also run against Circle itself, from Node and from Nest on an iPhone, on Arc testnet and Base mainnet (see the end of [Known gaps](#known-gaps)).
+The code is lifted out of Nest, an iPhone app that pays for x402 resources and buys tokens from an agent wallet. This package is that client on its own. Its tests run against a stand-in for Circle's proxy, and it has run against Circle itself, from Node and from Nest on an iPhone, on Arc testnet and Base mainnet. [What has run for real](#what-has-run-for-real) says exactly which parts.
 
 ## Quick start
 
@@ -25,42 +25,60 @@ const agent = createAgentWallet({ network: 'arc', storage: keychainStorage(Keych
 await agent.login.prepare();          // optional: start making the login key early, it takes seconds on a phone
 await agent.login.start(email);
 const wallet = await agent.login.finish(code);   // { address, id, blockchain, network, expiresAt }
+await agent.deploy();                 // once, after an account's first login: Circle will not sign for a wallet that is not on-chain yet
 
 await agent.balance();                // "19.99", USDC as Circle reports it
+await agent.balances();               // every token: [{ symbol, address, amount }]
 
-// Sign EIP-712 typed data: as a viem account, or as the signer @x402/evm asks for.
+// Sign: EIP-712 typed data or a plain message, as a viem account or as the signer @x402/evm asks for.
 const account = await agent.account();
-const signature = await account.signTypedData({ domain, types, primaryType, message });
+await account.signTypedData({ domain, types, primaryType, message });
+await account.signMessage({ message: 'hello' });
 registerExactEvmScheme(x402client, { signer: await agent.x402Signer() });
 
-// Send one contract call. Circle's bundler submits it; the promise resolves once Circle reports it confirmed.
+// Send a contract call or a token transfer. Circle's bundler submits it; the promise resolves once Circle reports it confirmed.
 const { hash } = await agent.call({ to: contract, data: calldata });
-
-// Send USDC (or another token, by its contract address), and top up from Circle's testnet faucet.
-await agent.transfer({ to: recipient, amount: '0.01' });
-await agent.fund();
-await agent.deploy();                 // once, for a brand-new wallet: Circle will not sign for it until it exists on-chain
+await agent.transfer({ to: recipient, amount: '0.01' });    // USDC, or another token by its contract address
+await agent.transactions();           // the wallet's latest transactions at Circle
+await agent.fund();                   // Circle's testnet faucet
 
 // Paid services in Circle's Agent Marketplace. Public: it needs no login.
 const services = await searchServices({ query: 'restaurants' });
 
-// Circle's spending limits, mainnet only. Reading takes the agent's session; changing takes the owner's own emailed code.
-await agent.limits.read();            // [{ perTx, daily, weekly, monthly, origin: 'DEFAULT' | 'CUSTOM', ... }]
+// Circle's spending rules, mainnet only. Reading takes the agent's session; changing takes the owner's own emailed code.
+await agent.limits.read();            // [{ ruleType, perTx, daily, weekly, monthly, addresses, origin: 'DEFAULT' | 'CUSTOM', id }]
+await agent.limits.budget();          // what is left in each window
 await agent.limits.owner.start(email);
 await agent.limits.owner.finish(ownerCode);
 await agent.limits.set({ perTx: '0.5', daily: '2', weekly: '10', monthly: '20' });
-await agent.limits.reset();           // back to Circle's default
 await agent.limits.setList('contract-allowlist', [seller]);    // the only contracts the wallet may call
-await agent.limits.setList('recipient-blocklist', [address]);  // addresses it may never pay
+await agent.limits.reset();           // back to Circle's default; reset(id) removes one rule
+agent.limits.owner.end();             // drop the owner's token as soon as the rules are set
 
 await agent.logout();                 // revoke this session at Circle; logout('all') revokes every device's
 ```
 
-On the next launch, `createAgentWallet` with the same storage finds the session again: `agent.wallet()` answers without a network call, and throws an `AgentWalletError` with code `not_logged_in` or `session_expired` when there is nothing to use. `agent.session()` returns the stored session itself, and `isExpired(session)` says whether it is past its expiry.
+On the next launch, `createAgentWallet` with the same storage finds the session again: `agent.wallet()` answers without a network call, and throws `not_logged_in` or `session_expired` when there is nothing to use. `agent.session()` returns the stored session itself, and `isExpired(session)` says whether it is past its expiry.
 
-Every failure is an `AgentWalletError` with a `code`: `not_logged_in`, `session_expired`, `wrong_code`, `invalid_input`, `http` (with Circle's `status`), `protocol` (Circle answered with something this client does not understand), `transaction_failed`, `limit_exceeded` (Circle refused because of the wallet's spending limit) or `not_allowed` (Circle refused because of the owner's allow or block list).
+[`examples/expo-app`](examples/expo-app) has a one-screen app (log in, balance, pay one x402 resource). It builds and installs on an iPhone; the app that has actually paid from one is Nest. Its payment helper, `x402.ts`, is the part the tests and the smoke script exercise.
 
-[`examples/expo-app`](examples/expo-app) has a one-screen app (log in, balance, pay one x402 resource). It builds and installs on an iPhone, and has not yet logged in or paid from one. Its payment helper, `x402.ts`, is the part the tests and the smoke script exercise.
+## Errors
+
+Every failure is an `AgentWalletError` with a `code`.
+
+| `code` | Meaning |
+|---|---|
+| `not_logged_in`, `session_expired` | There is no session to use; log in. Also thrown by `limits.set()` and its siblings without an owner login. |
+| `wrong_code` | Circle refused the emailed code. The login stays open, so `finish` can be called again. |
+| `invalid_input` | The call was refused before anything was sent, or Circle would refuse it (a second rule of one kind). |
+| `limit_exceeded` | Circle refused to sign or send because of the wallet's amount cap. Nothing moved. |
+| `not_allowed` | Circle refused because of the owner's allow or block list. Nothing moved. |
+| `transaction_failed` | Circle reports the transaction failed, was cancelled or was denied. |
+| `outcome_unknown` | Circle took the request and has not said how it ended: a status check kept failing, or a minute ran out. The transaction may still happen. Look it up with `transaction(id)`, or retry with the same `idempotencyKey`; a fresh `call()` or `transfer()` could send it twice. |
+| `http` | Circle answered with an error; `status` has the HTTP status. |
+| `protocol` | Circle answered with something this client does not understand. |
+
+`call()` and `transfer()` take an optional `idempotencyKey` (a UUID). Pass your own when a retry must never send twice.
 
 ## Security model
 
@@ -70,11 +88,31 @@ That makes the session a bearer credential. It is five values (`userToken`, `enc
 
 The library never stores, logs or returns the email or the code. The email lives in memory between `login.start` and `login.finish`; the code goes into one encrypted request. Errors carry Circle's HTTP status and numeric code, and Circle's own message only outside a login, where it could echo either.
 
-On testnet Circle signs whatever typed data a valid session sends: its spending limits exist on mainnet only. There they do cover x402 payments. On Base mainnet, with a limit of 0.005 USDC per payment set through the CLI, Circle refused to sign a 0.01 USDC payment (a 400, "spend limit exceeded"), opened no challenge and moved no funds. That was first seen from the Nest app's side, and then from this package on 24 Nov 2026: with the same cap set through `limits.set()`, Circle refused both a 0.01 USDC payment and a 0.01 USDC transfer with code 136001, "spend limit exceeded", and the balance did not move. Whatever limit you want on testnet, or beyond Circle's, has to run in your app before `signTypedData` is called. `examples/expo-app/x402.ts` shows the shape: the 402's scheme, network, token, amount and payee are checked against what the app expects, and a 402 that fails sends nothing to Circle. The tests cover that refusal.
+Circle enforces spending rules on mainnet only (see [Limits and lists](#limits-and-lists)). On testnet it signs whatever typed data a valid session sends, so whatever limit you want there, or beyond Circle's, has to run in your app before `signTypedData` is called. `examples/expo-app/x402.ts` shows the shape: the 402's scheme, network, token, amount, payee and validity are checked against what the app expects, and a 402 that fails sends nothing to Circle. The tests cover each of those refusals.
 
 Two smaller points. The wallet is a smart contract account, so its signatures verify through ERC-1271 rather than `ecrecover`, and only once the wallet is deployed; a new wallet needs one first transaction of any kind before a seller's facilitator will accept its signature. And requests go out with the runtime's own User-Agent. The library never claims to be Circle's CLI, and if Circle's proxy starts refusing other clients, that is a stop, not something to work around.
 
 Circle's Agent Platform terms apply to whoever logs in: it is your account, on your device. Don't ship an app in which other people use your session.
+
+## Limits and lists
+
+Circle can restrict an agent wallet, and the agent cannot lift the restriction: changing a rule takes the wallet owner's own login, a second emailed code. This client keeps that owner token in memory for at most ten minutes and never stores it; call `limits.owner.end()` to drop it sooner. While it is held, whatever code holds the wallet object can change the rules, so end it before handing control back to an agent.
+
+What Circle enforces, as seen from this client on Base mainnet on 24 Nov 2026:
+
+| Rule | Set with | Covers | Seen refusing |
+|---|---|---|---|
+| Amount cap per payment, day, week and month | `limits.set()` | Stablecoin transfers and signed x402 payments | Yes: a 0.01 USDC payment and a 0.01 USDC transfer under a 0.005 cap, 400 with code 136001, "spend limit exceeded" |
+| Contract allowlist | `limits.setList('contract-allowlist', …)` | Contract calls | Yes: a call to a contract off the list, 400 with code 136005, "Contract address is not on the allowlist."; a call to the listed contract went through ([`0xc1b9d1a8…083f`](https://basescan.org/tx/0xc1b9d1a8ca742038acef1e9ecb9460543919b16f9685ed75db5b5f658618083f)) |
+| Contract blocklist, recipient allowlist and blocklist | `limits.setList(…)` | Contract calls; stablecoin transfers | Not run against Circle: the same request with another rule name |
+
+In each refusal no challenge was opened and the balance did not move. With no custom rule Circle applies 100 USDC a month.
+
+Three things to know before building on this:
+
+- **Circle's amount caps do not cover contract calls.** The CLI offers that cap (`--policy-type contract` with a transfer limit), but Circle answered the request with a bare 400, so this client does not send it. For a contract call Circle restricts which contract, never how much: a cap on what a call may spend has to be the app's own check, made before `call()`.
+- **The rules exist on mainnet only.** On testnet these calls throw `invalid_input` without asking Circle.
+- **A rule is not replaced in place.** A second rule of the same kind is refused; call `limits.reset()` or `limits.reset(id)` first.
 
 ## Networks
 
@@ -87,25 +125,45 @@ Testnet and mainnet are separate Circle accounts with separate logins and wallet
 
 ## Known gaps
 
-The API is undocumented. Every call was read out of the CLI's published source (see [docs/PROTOCOL.md](docs/PROTOCOL.md)), and a CLI release can change any of them without notice. Half the endpoints do appear in Circle's user-controlled wallets reference, but there they are called with your own API key; here Circle's proxy adds its own.
+**The API is undocumented.** Every call was read out of the CLI's published source (see [docs/PROTOCOL.md](docs/PROTOCOL.md)), and a CLI release can change any of them without notice. `npm run drift` downloads the newest CLI and checks that every path, header and field this client depends on is still in it; a scheduled workflow runs it weekly. Half the endpoints do appear in Circle's user-controlled wallets reference, but there they are called with your own API key; here Circle's proxy adds its own.
 
-A session cannot be refreshed. The CLI never keeps a refresh token and neither does this client, so when the session expires (the `exp` of the user token) the user logs in again with a new code.
+**A session cannot be refreshed.** The CLI never keeps a refresh token and neither does this client, so when the session expires (the `exp` of the user token, about four weeks) the user logs in again with a new code.
 
-A new account's first login creates its wallets (Circle calls it bootstrap). On Arc testnet this client does that itself: on 24 Nov 2026 a never-used email logged in through it with no CLI involved and got a new wallet, `0x5a5d4af9730fd92f4db96a1c3f5b980a9879e0f6`. That wallet starts empty and undeployed, so Circle refuses to sign for it ("Cannot generate a signature from an undeployed wallet") until it has sent one transaction. `deploy()` sends one that moves nothing, a zero USDC approve to the wallet itself. On that new wallet it ran the same day: the faucet's 20 USDC arrived, [`0xd8f7a76f…fd12`](https://explorer.testnet.arc.io/tx/0xd8f7a76f6f9d24ecab4fc0868149937d15751bbd8cfae677abd208aede81fd12) deployed it with the gas sponsored, and its first x402 payment then settled: [`0xc7688296…a96f`](https://explorer.testnet.arc.io/tx/0xc768829662215b78ad480bac0b0a192c0e47fd626a82f4307e35ebe39bdfa96f?tab=token_transfers). The same ran on Base mainnet that day: another never-used email logged in, got `0xa7b8def3f516eceef79632f2ee6991e9d6137fd5`, and `deploy()` put it on-chain while it held no ETH and no USDC, so Circle sponsored that gas too: [`0xe688e30a…a028`](https://basescan.org/tx/0xe688e30a08d30f992666ca10511de3a870cbea1c2f0fd514c3b7b10f4a1fa028). Accounts from before Circle's current login flow use an older path this client does not implement either.
+**A new wallet cannot sign until it is deployed.** An account's first login creates its wallets, and this client does that itself on both networks. The new wallet is a smart contract account that is not on-chain yet, and Circle answers "Cannot generate a signature from an undeployed wallet" until it has sent one transaction. `deploy()` sends one that moves nothing, a zero USDC approve to the wallet itself, with the gas sponsored even for a wallet holding nothing.
 
-It signs typed data, sends contract calls and token transfers, asks the testnet faucet and searches the marketplace. It has no `signMessage`, no raw transactions and no Gateway. It reads, sets and resets Circle's limits on Base mainnet (`limits`). A contract allowlist ran on Base mainnet on 24 Nov 2026: with USDC as the only allowed contract, Circle refused a call to another contract (400, code 136005, "Contract address is not on the allowlist.") and let a call to USDC through ([`0xc1b9d1a8…083f`](https://basescan.org/tx/0xc1b9d1a8ca742038acef1e9ecb9460543919b16f9685ed75db5b5f658618083f)). The block lists and the recipient lists are tested against the stand-in only.
+**Not built.** Gateway (Circle's prepaid balance for batched sellers), fee estimates, raw transactions, passkeys, the login path for accounts from before Circle's current flow, and the CLI's swap, bridge, earn and borrow commands.
 
-A limitation worth its own paragraph: **Circle's amount caps do not cover contract calls.** `limits.set()` caps stablecoin transfers and signed x402 payments. The CLI also offers the same cap for contract calls (`--policy-type contract` with a transfer limit), but when this client sent that request on Base mainnet on 24 Nov 2026 Circle answered 400 with no reason, so the option was removed. What Circle does enforce on contract calls is the contract allowlist and blocklist: which contracts, not how much. A cap on what a contract call may spend has to be the app's own check, made before `call()`. The owner's token for changing limits is kept in memory for ten minutes and never stored; `limits.set()` does not replace an existing custom limit, so call `limits.reset()` first. `searchServices()`, `transfer()` and `fund()` have each run against Circle once, on 24 Nov 2026 (see [On-chain](#on-chain)). `call()` waits at most a minute for the approval and a minute for the transaction. A transaction that outlasts its minute throws with its id in the message, and `transaction(id)` reports where it stands.
+**Only an iPhone has run this code.** Android goes through the same `react-native-keychain` call and should work, but nobody has tried. The approval request still carries the device description the CLI sends (`WebSDK`, `Desktop`), because that is the only value known to pass.
 
-Only an iPhone has run this code. Android goes through the same `react-native-keychain` call and should work, but nobody has tried. The approval request still carries the device description the CLI sends (`WebSDK`, `Desktop`), because that is the only value known to pass.
+**The login key is slow to make.** An RSA-2048 key in pure JavaScript took about 22 seconds in Node with the JIT off, used as a stand-in for a phone's engine; it was not timed on the iPhone. Call `login.prepare()` when the email field gets focus so the wait hides behind typing. The key is made in 50 ms slices with a `setTimeout` between them. That is deliberate: node-forge's own async generation chains `setImmediate`, which React Native 0.88 runs as a microtask, and the app froze until the key was done.
 
-Making the RSA-2048 login key in pure JavaScript is slow: about 22 seconds in Node with the JIT off, used as a stand-in for a phone's engine. It was not timed on the iPhone. Call `login.prepare()` when the email field gets focus so the wait hides behind typing. The key is made in 50 ms slices with a `setTimeout` between them. That is deliberate: node-forge's own async generation chains `setImmediate`, which React Native 0.88 runs as a microtask, and the app froze until the key was done.
+## What has run for real
 
-Last, what has and has not run for real. On 23 Nov 2026 the built package ran against Circle from Node on Arc testnet (`npm run smoke`): login, wallet, balance, one x402 payment, `call()`, `transaction()` and `logout('local')`, with both transactions checked on-chain and the old session refused afterwards. The hashes are under [On-chain](#on-chain). On a phone, Nest has used this package (0.2.0, from npm) on an iPhone since 23 Nov 2026: a login on each network, x402 payments on Arc and on Base, and a contract call on Arc. Limits, lists, transfers and first login have not been run from a phone. On 24 Nov 2026 it also ran on Base mainnet: login, an x402 payment, a contract call, a transfer, reading limits and budget, the owner login, `limits.set()`, `limits.reset()` and logout. `logout('all')` has never been sent to Circle.
+"Circle" below means run against Circle from this package, with each transaction checked on-chain; the hashes are under [On-chain](#on-chain). Everything is also covered by tests against the stand-in.
+
+| Capability | Arc testnet | Base mainnet | From an iPhone |
+|---|---|---|---|
+| Login with the emailed code | Circle | Circle | Yes |
+| First login that creates the wallets, `deploy()` | Circle | Circle | No |
+| `balance()` | Circle | Circle | Yes |
+| x402 payment through `x402Signer()` | Circle | Circle | Yes |
+| `call()`, `transaction()` | Circle | Circle | Yes, on Arc |
+| `transfer()` | Circle | Circle | No |
+| `fund()` | Circle | Testnet only | No |
+| `searchServices()` | Circle (one public list, not tied to a chain) | | No |
+| `limits.read()`, `budget()`, owner login, `set()`, `reset()` | Mainnet only | Circle | No |
+| Contract allowlist and its refusal | Mainnet only | Circle | No |
+| `logout('local')` | Circle | Circle | No |
+| `signMessage()`, `balances()`, `wallets()`, `transactions()` | Stand-in only | Stand-in only | No |
+| `cancel()`, `accelerate()` | Stand-in only | Stand-in only | No |
+| Blocklists, recipient lists, `reset(id)` | Mainnet only | Stand-in only | No |
+| `logout('all')` | Never sent | Never sent | No |
+
+The rows marked "stand-in only" were written from the CLI's source and have never met Circle. `npm run smoke -- --extras --no-pay` exercises the first of them against Circle and checks the signed message on-chain.
 
 ## On-chain
 
-Everything is from 23 and 24 Nov 2026, on one account: agent wallet `0x7286ec1ec69b477bba05ce28a21b1e03748b7765` on Arc testnet and `0xece745ef9d38a03473a5adafa6b71951170448d4` on Base mainnet. Each transaction was checked against the chain's RPC.
+Everything is from 23 and 24 Nov 2026. Unless a line says otherwise it is one account: agent wallet `0x7286ec1ec69b477bba05ce28a21b1e03748b7765` on Arc testnet and `0xece745ef9d38a03473a5adafa6b71951170448d4` on Base mainnet. Each transaction was checked against the chain's RPC.
 
 Sent by this package, run from Node against Circle's testnet proxy:
 
@@ -121,6 +179,11 @@ Sent by this package on Base mainnet, on 24 Nov 2026, with real USDC and the gas
 - A contract call, a zero USDC `approve`: [`0x7d7227bf…11cc`](https://basescan.org/tx/0x7d7227bf69241184c0be9dddf954ed886c3c0db6f16858feeaea2fa72f4b11cc)
 - A transfer of 0.01 USDC from the wallet to itself: [`0xc3cafc69…e38a`](https://basescan.org/tx/0xc3cafc694fe5347b17f06bfaeea98eb280acf7d58221e63b3a43af004951e38a)
 - A spending limit of 0.005 USDC per payment set with a second emailed code, two refusals under it, and a reset to Circle's default of 100 USDC a month. None of those is a transaction.
+
+First logins through this package, with never-used email addresses and no CLI, on 24 Nov 2026:
+
+- Arc testnet: a new wallet, `0x5a5d4af9730fd92f4db96a1c3f5b980a9879e0f6`. The faucet's 20 USDC arrived, `deploy()` put it on-chain with the gas sponsored ([`0xd8f7a76f…fd12`](https://explorer.testnet.arc.io/tx/0xd8f7a76f6f9d24ecab4fc0868149937d15751bbd8cfae677abd208aede81fd12)), and its first x402 payment then settled ([`0xc7688296…a96f`](https://explorer.testnet.arc.io/tx/0xc768829662215b78ad480bac0b0a192c0e47fd626a82f4307e35ebe39bdfa96f?tab=token_transfers)). Before `deploy()`, Circle had refused to sign for it.
+- Base mainnet: a new wallet, `0xa7b8def3f516eceef79632f2ee6991e9d6137fd5`, deployed while it held no ETH and no USDC, so Circle sponsored that gas too ([`0xe688e30a…a028`](https://basescan.org/tx/0xe688e30a08d30f992666ca10511de3a870cbea1c2f0fd514c3b7b10f4a1fa028)).
 
 Sent by this package from an iPhone, inside Nest, on 23 Nov 2026 (UTC):
 
@@ -142,10 +205,11 @@ npm install
 npm test            # vitest, against a stand-in for Circle's proxy; no network
 npm run typecheck
 npm run build       # dist/
+npm run drift       # compare this client's calls with the newest Circle CLI on npm
 npm run smoke       # live, on Arc testnet: asks for your email and code, pays the seller in SMOKE_URL 0.01 USDC
 ```
 
-The fake in `test/fake-circle.ts` is written with Node's own crypto from the CLI's source, so the library's AES, RSA and PIN code is checked against a second implementation rather than against itself. The library itself imports no Node built-ins.
+The fake in `test/fake-circle.ts` is written with Node's own crypto from the CLI's source, so the library's AES, RSA and PIN code is checked against a second implementation rather than against itself. The library itself imports no Node built-ins. `scripts/smoke.mjs` lists the flags for the other live runs, Base mainnet among them; every one logs out at the end and checks that Circle then refuses the old session.
 
 ## Licence
 

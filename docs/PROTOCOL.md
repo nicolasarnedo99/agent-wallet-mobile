@@ -133,6 +133,20 @@ Three more calls this library makes were read in the CLI's source. Each has run 
 | `POST /fund` (testnet proxy, no `/v1/w3s`) | `{address, blockchain, token: "usdc" \| "eth" \| "eurc" \| "native"}` | unused; the tokens arrive later | `commands/wallet/fund.ts:391` |
 | `GET https://api.circle.com/v2/x402/discovery/resources?query=&category=&limit=&offset=&siwx=false` | no token | `{items: [{resource, metadata: {provider, method, description}, accepts: [{amount, network}]}], pagination}` | `commands/services/search.ts:88` |
 
+Five more were read in the CLI's source and, from this library, have run against the stand-in only:
+
+| Call | Request | Response | Source |
+|---|---|---|---|
+| `POST /v1/w3s/user/sign/message` | `{walletId, message}`, or `{walletId, message: "0x…", encodedByHex: true}` for raw bytes | `{challengeId}`, approved like typed data; the signature is in the approval's answer | `circle-http-client.ts:905` |
+| `POST /v1/w3s/user/transactions/{id}/cancel` | `{idempotencyKey}` | `{challengeId}`, approved like a transaction | `circle-http-client.ts:697` |
+| `POST /v1/w3s/user/transactions/{id}/accelerate` | `{idempotencyKey}` | `{challengeId}`, approved like a transaction | `circle-http-client.ts:714` |
+| `GET /v1/w3s/transactions?walletIds=&pageSize=` | none | `{transactions: [{id, state, operation, txHash, errorReason}]}` | `circle-http-client.ts:644` |
+| `GET /v1/w3s/wallets?pageSize=50` (no `blockchain`) | none | `{wallets: [{id, address, blockchain}]}`, one per chain | `circle-http-client.ts:419` |
+
+## Waiting, and what is not known
+
+Circle sends a transaction once its challenge is approved, whatever the client then sees. So after the approval this library treats a failed status check (a dropped connection, a 5xx) as no answer and asks again, and it reports running out of time as `outcome_unknown`, never as a failure. An approval that fails on the way with anything but a 4xx is `outcome_unknown` too, since it may have arrived. A completed challenge names its transaction a moment later, so `COMPLETE` without `correlationIds` is waited on. The creation calls carry an `idempotencyKey`; a caller who passes their own can retry safely. That Circle treats a repeated key as the same request is how its API describes the field, not something this library has tested.
+
 ## Spending limits
 
 Mainnet only. These routes belong to the service itself, at `https://agentic-wallet.circle.com`, outside every proxy. Read from the CLI's source, and run from this library against Circle on Base mainnet on 24 Nov 2026. Over a limit, Circle answers the signing or transfer request itself with 400, code 136001, "spend limit exceeded".
