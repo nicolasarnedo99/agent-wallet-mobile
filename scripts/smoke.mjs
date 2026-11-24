@@ -5,6 +5,7 @@
 //   npm run smoke -- --call  # the payment, then a zero USDC approve through call() and transaction()
 //   npm run smoke -- --fund --transfer   # also ask the faucet for USDC, and transfer 0.01 USDC to the payee
 //   npm run smoke -- --base --extras --rules --no-pay   # on mainnet: the read calls and a signed message, then the allowlist and blocklists; at most 0.01 USDC
+//   npm run smoke -- --base --probe --no-pay     # does a recipient allowlist stop a signed payment? signs, never sends; spends nothing
 //   npm run smoke -- --base --lists --no-pay    # an allowlist of one contract, a refused call, an allowed one; spends nothing
 //   npm run smoke -- --bridge --no-pay           # bridge 0.10 test USDC from Arc testnet to Base Sepolia and wait for it to arrive
 //   npm run smoke -- --extras --no-pay           # sign a message and check it on-chain, list tokens, wallets and transactions; spends nothing
@@ -52,8 +53,8 @@ async function main() {
   if (!RESOURCE || !/^0x[0-9a-fA-F]{40}$/.test(PAYEE ?? '')) throw new Error('Set the seller URL and its payee in .env.local (see the top of this file)');
   if (BASE && process.argv.includes('--fund')) throw new Error('There is no faucet on mainnet');
   if (BASE && process.argv.includes('--bridge')) throw new Error('The bridge run is testnet only until it has worked there once');
-  if (!BASE && (process.argv.includes('--limits') || process.argv.includes('--lists') || process.argv.includes('--rules'))) throw new Error('Limits exist on mainnet only: add --base');
-  if (BASE) console.log(!process.argv.includes('--no-pay') ? 'BASE MAINNET: this run spends 0.01 real USDC.' : process.argv.includes('--rules') ? 'BASE MAINNET: this run spends nothing if Circle refuses a payment it should refuse, and 0.01 real USDC if it does not.' : 'BASE MAINNET: no payment in this run.');
+  if (!BASE && (process.argv.includes('--limits') || process.argv.includes('--lists') || process.argv.includes('--rules') || process.argv.includes('--probe'))) throw new Error('Limits exist on mainnet only: add --base');
+  if (BASE) console.log(!process.argv.includes('--no-pay') ? 'BASE MAINNET: this run spends 0.01 real USDC.' : process.argv.includes('--rules') ? 'BASE MAINNET: this run spends nothing if Circle refuses a payment it should refuse, and 0.01 real USDC if it does not.' : process.argv.includes('--probe') ? 'BASE MAINNET: this run signs and never sends, so it spends nothing.' : 'BASE MAINNET: no payment in this run.');
   const withCall = process.argv.includes('--call');
   const result = { package: 'dist/ built from this checkout', network: NET, ranAt: new Date().toISOString() };
   const agent = createAgentWallet({ network: NET });
@@ -182,6 +183,37 @@ async function main() {
       result.transactions = await agent.transactions(3);
       console.log(`history  ${JSON.stringify(result.transactions)}`);
       if (!result.signMessage.startsWith('valid')) throw new Error('signMessage returned a signature the wallet does not accept');
+    }
+    if (process.argv.includes('--probe')) {
+      // Does a recipient allowlist stop a signed payment? Circle is asked to sign the same kind of authorization an x402 payment
+      // uses, to the seller and to the wallet itself, before the list is set, while it is set, and after it is removed. No
+      // signature is sent to anyone or printed, and each expires after two minutes, so nothing can be spent.
+      const custom = rows => rows.filter(row => row.origin === 'CUSTOM');
+      if (custom(await agent.limits.read()).length) throw new Error('A custom rule is already set and this test would remove it: reset it yourself first');
+      const authorization = to => ({ domain: { name: TERMS.name, version: TERMS.version, chainId: NETWORKS[NET].chainId, verifyingContract: USDC },
+        types: { TransferWithAuthorization: [{ name: 'from', type: 'address' }, { name: 'to', type: 'address' }, { name: 'value', type: 'uint256' },
+          { name: 'validAfter', type: 'uint256' }, { name: 'validBefore', type: 'uint256' }, { name: 'nonce', type: 'bytes32' }] },
+        primaryType: 'TransferWithAuthorization',
+        message: { from: wallet.address, to, value: '10000', validAfter: '0', validBefore: String(Math.floor(Date.now() / 1000) + 120),
+          nonce: `0x${[...crypto.getRandomValues(new Uint8Array(32))].map(b => b.toString(16).padStart(2, '0')).join('')}` } });
+      const asked = to => agent.signTypedData(authorization(to)).then(() => 'signed', error => `${error.code}${error.status ? ` ${error.status}` : ''}: ${error.message}`);
+      result.probe = { before: await asked(PAYEE) };
+      console.log(`probe    no list, to the seller: ${result.probe.before}`);
+      await agent.limits.owner.start(await ask('Owner login for changing rules. The same email again (typing is hidden): '));
+      await agent.limits.owner.finish(await ask('The owner code (typing is hidden): '));
+      try {
+        await agent.limits.setList('recipient-allowlist', [wallet.address]);
+        result.probe.offList = [await asked(PAYEE), await asked(PAYEE), await asked(PAYEE)];
+        console.log(`probe    allowlist of the wallet only, to the seller, three times: ${JSON.stringify(result.probe.offList)}`);
+        result.probe.onList = await asked(wallet.address);
+        console.log(`probe    same list, to the wallet itself: ${result.probe.onList}`);
+      } finally {
+        await agent.limits.reset().catch(error => console.error(`RULES NOT RESET (${error.message}). Run: circle wallet limit reset --address ${wallet.address} --chain BASE`));
+        agent.limits.owner.end();
+        if (custom(await agent.limits.read()).length) console.error(`A CUSTOM RULE IS STILL SET. Run: circle wallet limit reset --address ${wallet.address} --chain BASE`);
+      }
+      result.probe.after = await asked(PAYEE);
+      console.log(`probe    list removed, to the seller: ${result.probe.after}`);
     }
     if (process.argv.includes('--rules')) {
       // The lists never yet run against Circle. A recipient allowlist holding only this wallet: is a signed x402 payment to the
