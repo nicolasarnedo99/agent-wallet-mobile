@@ -6,8 +6,9 @@ import { registerExactEvmScheme } from '@x402/evm/exact/client';
 import type { X402Signer } from '../../src/index.js'; // in an app: from 'agent-wallet-mobile'
 
 // What the app is willing to pay: one token on one chain (named as its EIP-712 domain), up to maxAmount base units, to one payee.
-export type Terms = { network: `${string}:${string}`; asset: string; name: string; version: string; maxAmount: bigint; payTo: string };
-type Requirement = { scheme: string; network: string; asset: string; amount: string; payTo: string; extra?: Record<string, unknown> };
+// The seller chooses how long a signed payment stays valid; maxTimeoutSeconds caps that, an hour unless the app says otherwise.
+export type Terms = { network: `${string}:${string}`; asset: string; name: string; version: string; maxAmount: bigint; payTo: string; maxTimeoutSeconds?: number };
+type Requirement = { scheme: string; network: string; asset: string; amount: string; payTo: string; maxTimeoutSeconds?: number; extra?: Record<string, unknown> };
 
 export function checkRequirement(requirement: Requirement, terms: Terms): void {
   if (requirement.scheme !== 'exact') throw new Error('Refused to pay: scheme');
@@ -20,10 +21,12 @@ export function checkRequirement(requirement: Requirement, terms: Terms): void {
   const amount = BigInt(requirement.amount);
   if (amount <= 0n || amount > terms.maxAmount) throw new Error('Refused to pay: amount');
   if (requirement.payTo.toLowerCase() !== terms.payTo.toLowerCase()) throw new Error('Refused to pay: payTo');
+  if ((requirement.maxTimeoutSeconds ?? 0) > (terms.maxTimeoutSeconds ?? 3600)) throw new Error('Refused to pay: timeout');
 }
 
 export async function payOnce(url: string, signer: X402Signer, terms: Terms, doFetch: typeof fetch = fetch): Promise<{ body: unknown; transaction: string | null }> {
   let refusal: Error | undefined; // our own reason: the x402 client wraps a hook's abort in its own text
+  let signed = false;
   const client = new x402Client();
   client.setSpendControls({ allowedAssets: [{ network: terms.network, asset: terms.asset, maxAmountPerPayment: terms.maxAmount.toString() }] });
   registerExactEvmScheme(client, { signer });
@@ -46,9 +49,14 @@ export async function payOnce(url: string, signer: X402Signer, terms: Terms, doF
       throw refusal ?? ((error as Error).name === 'AgentWalletError' ? error : new Error(`Refused to pay: ${(error as Error).message}`));
     }
     response = await doFetch(url, { headers: http.encodePaymentSignatureHeader(payload) });
+    signed = true;
   }
-  if (response.status !== 200) throw new Error(`The seller answered ${response.status}`);
   let transaction: string | null = null;
   try { transaction = http.getPaymentSettleResponse(name => response.headers.get(name)).transaction || null; } catch { /* no settlement header */ }
-  return { body: await response.json(), transaction };
+  // Once the seller holds a signed payment it can settle it whatever it answers, so a failure from here on says so.
+  const paid = signed ? `A payment was signed${transaction ? ` and settled (${transaction})` : ' and may still be settled'}, but ` : '';
+  if (response.status !== 200) throw new Error(`${paid}${paid ? 't' : 'T'}he seller answered ${response.status}`);
+  let body: unknown;
+  try { body = await response.json(); } catch { throw new Error(`${paid}${paid ? 't' : 'T'}he seller's answer was not JSON`); }
+  return { body, transaction };
 }

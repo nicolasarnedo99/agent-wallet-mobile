@@ -1,7 +1,7 @@
 import forge from 'node-forge';
 import { decodePaymentSignatureHeader, encodePaymentRequiredHeader, encodePaymentResponseHeader } from '@x402/core/http';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { payOnce, type Terms } from '../examples/expo-app/x402.js';
+import { checkRequirement, payOnce, type Terms } from '../examples/expo-app/x402.js';
 import { AgentWalletError, createAgentWallet, isExpired, keychainStorage, memoryStorage, searchServices, type Network, type Session, type Storage } from '../src/index.js';
 import { ARC_USDC, BASE_USDC, CODE, EMAIL, HEAD, MINED, OWNER_TOKEN, SECRET, SHARE, SIGNATURE, WALLETS, fakeCircle, sha256, unwrapPinhash, user } from './fake-circle.js';
 
@@ -157,7 +157,16 @@ describe('login', () => {
     expect(code(failure)).toBe('http');
     expect(failure.status).toBe(422);
     expect(failure.message).not.toContain(EMAIL);
-  });
+    // And when the code is refused with an answer that repeats both.
+    const echoing: typeof fetch = async (input, init) => (String(input).endsWith('/factors')
+      ? new Response(JSON.stringify({ message: `code ${HEAD}-654321 for ${EMAIL} is wrong` }), { status: 500 }) : circle.fetch(input, init));
+    const wallet = createAgentWallet({ network: 'arc', fetch: echoing });
+    await wallet.login.start(EMAIL);
+    const refused = await wallet.login.finish('654321').catch(e => e);
+    expect(code(refused)).toBe('http');
+    expect(refused.message).not.toContain(EMAIL);
+    expect(refused.message).not.toContain('654321');
+  }, 120_000);
 });
 
 describe('networks', () => {
@@ -539,7 +548,30 @@ function seller() {
   return { url, paid, fetch: fetch as typeof globalThis.fetch };
 }
 
+describe('the checks a 402 must pass before anything is signed', () => {
+  const offer = { scheme: 'exact', network: 'eip155:5042002', asset: ARC_USDC, amount: '10000', payTo: PAY_TO, maxTimeoutSeconds: 120, extra: { name: 'USDC', version: '2' } };
+  it('passes the offer the app agreed to, whatever the case of its addresses', () => {
+    expect(() => checkRequirement(offer, terms)).not.toThrow();
+    expect(() => checkRequirement({ ...offer, payTo: PAY_TO.toLowerCase(), asset: ARC_USDC.toUpperCase().replace('0X', '0x') }, terms)).not.toThrow();
+  });
+  it.each([
+    ['scheme', { scheme: 'upto' }], ['network', { network: 'eip155:8453' }], ['asset', { asset: BASE_USDC }],
+    ['token domain', { extra: { name: 'USD Coin', version: '2' } }], ['token domain', { extra: { name: 'USDC', version: '1' } }],
+    ['transfer method', { extra: { name: 'USDC', version: '2', assetTransferMethod: 'permit2' } }],
+    ['amount', { amount: '10001' }], ['amount', { amount: '0' }], ['amount', { amount: '0x10' }], ['amount', { amount: ' 1' }],
+    ['payTo', { payTo: '0x2222222222222222222222222222222222222222' }], ['timeout', { maxTimeoutSeconds: 86_400 * 30 }],
+  ] as const)('refuses another %s: %j', (field, change) => {
+    expect(() => checkRequirement({ ...offer, ...change }, terms)).toThrow(`Refused to pay: ${field}`);
+  });
+});
+
 describe('paying an x402 resource', () => {
+  it('says a payment was signed when the seller then fails, so the app does not treat it as unpaid', async () => {
+    const { wallet } = await loggedIn(); const s = seller();
+    const failing = (async (input: string | URL | Request, init: RequestInit = {}) =>
+      (new Headers(init.headers).get('payment-signature') ? new Response('oops', { status: 500 }) : s.fetch(input, init))) as typeof fetch;
+    await expect(payOnce(s.url, await wallet.x402Signer(), terms, failing)).rejects.toThrow('A payment was signed');
+  });
   it('has Circle sign the EIP-3009 transfer once the 402 passes the checks', async () => {
     const { wallet, circle } = await loggedIn(); const s = seller();
     await expect(payOnce(s.url, await wallet.x402Signer(), terms, s.fetch)).resolves.toEqual({ body: { answer: 42 }, transaction: MINED });
