@@ -111,6 +111,44 @@ describe('login', () => {
     expect(await wallet.login.finish(CODE)).toMatchObject({ address: WALLETS.base.address, blockchain: 'BASE' });
     expect(circle.seen.initialize.blockchains).toEqual(['ETH', 'MATIC', 'ARB', 'AVAX', 'OP', 'BASE', 'UNI', 'MONAD', 'ARC']);
   }, 120_000);
+  // A wrapper round the stand-in that can hold back, or fail once, the calls whose path matches.
+  const meddling = (network: Network, match: string, how: 'hold' | 'fail once') => {
+    const circle = fakeCircle(network); const storage = memoryStorage();
+    let release!: () => void; const held = new Promise<void>(resolve => { release = resolve; });
+    let failed = false;
+    const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).includes(match)) {
+        if (how === 'hold') await held;
+        else if (!failed) { failed = true; return new Response('{}', { status: 503 }); }
+      }
+      return circle.fetch(input, init);
+    }) as typeof globalThis.fetch;
+    return { circle, storage, release, wallet: createAgentWallet({ network, fetch, storage }) };
+  };
+  it('stores nothing when the wallet is forgotten while a login is still finishing', async () => {
+    const { wallet, storage, release } = meddling('arc', '/v1/w3s/wallets', 'hold');
+    await wallet.login.start(EMAIL);
+    const finishing = wallet.login.finish(CODE).catch(e => e);
+    await wallet.forget();
+    release();
+    expect(code(await finishing)).toBe('invalid_input');
+    expect(await storage.get(KEY.arc)).toBeNull();
+  }, 120_000);
+  it('answers two finishes of one login with the same wallet, sending the code once', async () => {
+    const { wallet, circle } = fresh();
+    await wallet.login.start(EMAIL);
+    const [first, second] = await Promise.all([wallet.login.finish(CODE), wallet.login.finish(CODE)]);
+    expect(second).toEqual(first);
+    expect(circle.calls.filter(call => call.endsWith('/factors'))).toHaveLength(1);
+  }, 120_000);
+  it('picks a login up where it stopped when a step after the accepted code fails, without sending the spent code again', async () => {
+    const { wallet, circle, storage } = meddling('arc', '/v1/w3s/wallets', 'fail once');
+    await wallet.login.start(EMAIL);
+    expect(code(await wallet.login.finish(CODE).catch(e => e))).toBe('http');
+    expect(await storage.get(KEY.arc)).toBeNull();
+    expect(await wallet.login.finish(CODE)).toMatchObject({ address: WALLETS.arc.address });
+    expect(circle.calls.filter(call => call.endsWith('/factors'))).toHaveLength(1);
+  }, 120_000);
   it('never puts the email or the code in an error', async () => {
     const circle = fakeCircle();
     const failing: typeof fetch = async (input, init) => (String(input).endsWith('/auth/challenges')
@@ -408,6 +446,14 @@ describe('limits', () => {
     expect(code(await wallet.limits.setList('contract-allowlist', addresses).catch(e => e))).toBe('invalid_input');
     expect(circle.calls).toEqual([]);
   });
+  it('says so when asked to remove a rule that is not there, and lets the app end the owner login early', async () => {
+    const { wallet, circle } = await loggedIn('base', { customLimit: true });
+    await wallet.limits.owner.start(EMAIL); await wallet.limits.owner.finish(CODE);
+    expect(code(await wallet.limits.reset('no-such-rule').catch(e => e))).toBe('invalid_input');
+    expect(circle.calls.some(call => call.startsWith('DELETE'))).toBe(false);
+    wallet.limits.owner.end();
+    expect(code(await wallet.limits.reset().catch(e => e))).toBe('not_logged_in');
+  }, 120_000);
   it('forgets the owner login after ten minutes, and at logout', async () => {
     const { wallet, circle } = await loggedIn('base');
     await wallet.limits.owner.start(EMAIL); await wallet.limits.owner.finish(CODE);

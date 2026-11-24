@@ -173,7 +173,8 @@ function openEnvelope(envelope: string, privateKey: forge.pki.rsa.PrivateKey): s
 
 // Held in memory between login.start and login.finish, never stored: it carries the email and the OTP token.
 type PendingLogin = Who & { email: string; deviceToken: string; deviceEncryptionKey: string; challengeId: string; correlationState: string; factorIndex: number;
-  otpToken: string; otpHead?: string; firstLogin: boolean };
+  otpToken: string; otpHead?: string; firstLogin: boolean;
+  accepted?: any }; // Circle's answer once it has taken the code: a code works once, so a retry must start from here
 
 // Circle emails the code. Throws, before the code is asked for, at an account the Circle CLI has not set up yet.
 async function startLogin(f: Fetch, network: Network, email: string, keys: LoginKeys, base?: string): Promise<PendingLogin> {
@@ -215,9 +216,9 @@ function fullCode(typed: string, head?: string): string {
 
 // The code goes into one encrypted request and nowhere else. Circle's answer, once it has confirmed the login.
 async function submitCode(f: Fetch, pending: PendingLogin, typed: string): Promise<any> {
-  const code = fullCode(typed, pending.otpHead);
-  let done: any;
-  try {
+  let done = pending.accepted;
+  if (!done) try {
+    const code = fullCode(typed, pending.otpHead);
     done = openJson(pending.deviceEncryptionKey, await sdk(f, pending, pending.deviceToken, 'POST', `/v1/w3s/sdk/auth/challenges/${pending.challengeId}/factors`,
       sealJson(pending.deviceEncryptionKey, { idempotencyKey: uuid(), factorSubmissions: [{ requiredFactorIndex: pending.factorIndex,
         emailOtpProof: { destination: pending.email, otpToken: pending.otpToken, code } }] })));
@@ -226,6 +227,7 @@ async function submitCode(f: Fetch, pending: PendingLogin, typed: string): Promi
     throw error;
   }
   if (String(done.state).toLowerCase() !== 'completed' || typeof done.userToken !== 'string' || !done.userToken) throw broken('Circle did not complete the login');
+  pending.accepted = done;
   // Circle confirms the challenge a moment after it completes, so not-yet and 5xx are retried as the CLI does; a 4xx is final.
   let confirmed = false;
   for (const wait of [0, 400, 1200, 2800]) {
@@ -356,6 +358,12 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
   // The owner's login for changing limits: its token is never stored, and is dropped after ten minutes or at logout.
   let ownerPending: PendingLogin | null = null;
   let owner: { token: string; until: number } | null = null;
+  // Logins overlap in a real app (a second tap, a logout mid-login). Each start, logout and forget moves `attempt` on, and work
+  // begun under an older one is thrown away instead of being stored.
+  let attempt = 0;
+  let finishing: Promise<WalletInfo> | null = null;
+  const replaced = () => new AgentWalletError('invalid_input', 'This login was replaced or cancelled: start again');
+  const drop = () => { attempt++; pending = null; ownerPending = null; owner = null; };
 
   // The stored session, expired or not; null when there is none for this network.
   async function session(): Promise<Session | null> {
@@ -451,18 +459,26 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
       async prepare(): Promise<void> { await (keys ??= loginKeys()); },
       // Circle emails the code. `codePrefix` is the letters before the dash in "ABC-123456", so the user may type the digits alone.
       async start(email: string): Promise<{ codePrefix: string | null }> {
+        const mine = ++attempt;
         pending = null;
         const made = keys ?? loginKeys(); keys = null; // a fresh key for each attempt, as the CLI does
-        pending = await startLogin(f, network, email.trim(), await made);
-        return { codePrefix: pending.otpHead ?? null };
+        const started = await startLogin(f, network, email.trim(), await made);
+        if (mine !== attempt) throw replaced();
+        pending = started;
+        return { codePrefix: started.otpHead ?? null };
       },
-      // Stores the session. After a wrong code the login stays open, so finish can be called again.
-      async finish(code: string): Promise<WalletInfo> {
-        if (!pending) throw new AgentWalletError('invalid_input', 'No login in progress: call login.start first');
-        const s = await finishLogin(f, pending, code);
-        await storage.set(key, JSON.stringify(s));
-        pending = null;
-        return info(s);
+      // Stores the session. After a wrong code the login stays open, so finish can be called again; so can it after a failure
+      // later on, which picks up from the accepted code. Two calls at once share one answer.
+      finish(code: string): Promise<WalletInfo> {
+        return finishing ??= (async () => {
+          const current = pending, mine = attempt;
+          if (!current) throw new AgentWalletError('invalid_input', 'No login in progress: call login.start first');
+          const s = await finishLogin(f, current, code);
+          if (mine !== attempt) throw replaced();
+          await storage.set(key, JSON.stringify(s));
+          pending = null;
+          return info(s);
+        })().finally(() => { finishing = null; });
       },
     },
     session,
@@ -560,15 +576,24 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
           // Circle emails a second code, to the same address as the agent's login.
           async start(email: string): Promise<{ codePrefix: string | null }> {
             mainnet(); await live();
-            ownerPending = null;
-            ownerPending = await startLogin(f, network, email.trim(), await loginKeys(), OWNER_PROXY);
-            return { codePrefix: ownerPending.otpHead ?? null };
+            const mine = attempt;
+            ownerPending = null; owner = null;
+            const started = await startLogin(f, network, email.trim(), await loginKeys(), OWNER_PROXY);
+            if (mine !== attempt) throw replaced();
+            ownerPending = started;
+            return { codePrefix: started.otpHead ?? null };
           },
           async finish(code: string): Promise<void> {
-            if (!ownerPending) throw new AgentWalletError('invalid_input', 'No owner login in progress: call limits.owner.start first');
-            owner = { token: (await submitCode(f, ownerPending, code)).userToken, until: Date.now() + 10 * 60_000 };
+            const current = ownerPending, mine = attempt;
+            if (!current) throw new AgentWalletError('invalid_input', 'No owner login in progress: call limits.owner.start first');
+            const { userToken } = await submitCode(f, current, code);
+            if (mine !== attempt) throw replaced();
+            const exp = jwtPayload(userToken)?.exp; // never longer than Circle's own expiry for the token
+            owner = { token: userToken, until: Math.min(Date.now() + 10 * 60_000, typeof exp === 'number' ? exp * 1000 : Infinity) };
             ownerPending = null;
           },
+          // Drops the owner's token now, without waiting out the ten minutes: call it as soon as the rules are set.
+          end(): void { owner = null; ownerPending = null; },
         },
         // A cap per payment, day, week and month on stablecoin transfers from this wallet on this chain, each at least the one
         // before. It does not replace a custom limit: Circle refuses, and so does this, until reset() has removed the old one.
@@ -594,9 +619,10 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
         async reset(id?: string): Promise<void> {
           mainnet(); await live();
           const token = ownerToken();
-          for (const row of await read()) {
-            if (row.origin !== 'CUSTOM' || !row.id || row.blockchain !== NETWORKS[network].blockchain || (id !== undefined && row.id !== id)) continue;
-            await plain(f, policy, 'DELETE', `/v1/policy/${encodeURIComponent(row.id)}`, token)
+          const rows = (await read()).filter(row => row.origin === 'CUSTOM' && row.id && row.blockchain === NETWORKS[network].blockchain && (id === undefined || row.id === id));
+          if (id !== undefined && !rows.length) throw new AgentWalletError('invalid_input', `No custom rule ${id} on this chain`);
+          for (const row of rows) {
+            await plain(f, policy, 'DELETE', `/v1/policy/${encodeURIComponent(row.id!)}`, token)
               .catch(error => { if (!(error instanceof AgentWalletError && error.status === 404)) throw error; }); // 404: already gone
           }
         },
@@ -606,7 +632,7 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
     // If Circle does not confirm, this throws and the session stays, so it can be retried; a session Circle already refuses (401,
     // or the 403 it answered a revoked session on Arc testnet) or one past its expiry is just removed.
     async logout(scope: 'local' | 'all' = 'local'): Promise<void> {
-      owner = null; ownerPending = null;
+      drop();
       const s = await session();
       if (s && !isExpired(s)) {
         try { await plain(f, s, 'POST', '/v1/w3s/users/token/deactivate', s.userToken, { idempotencyKey: uuid(), scope }); }
@@ -615,6 +641,6 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
       await storage.remove(key);
     },
     // Removes the stored session without telling Circle: it stays valid there until it expires.
-    async forget(): Promise<void> { await storage.remove(key); },
+    async forget(): Promise<void> { drop(); await storage.remove(key); },
   };
 }
