@@ -179,6 +179,14 @@ describe('networks', () => {
     expect(signature).toBe(SIGNATURE);
     expect(circle.seen.typedData.domain.chainId).toBe(8453);
   });
+  it("lists the account's wallets on every chain, and this wallet's latest transactions", async () => {
+    const { wallet } = await loggedIn();
+    expect(await wallet.wallets()).toEqual([{ id: 'w-arc', address: WALLETS.arc.address, blockchain: 'ARC-TESTNET' },
+      { id: 'w-other', address: '0x1111111111111111111111111111111111111111', blockchain: 'BASE-SEPOLIA' }]);
+    expect(await wallet.transactions(2)).toEqual([{ id: 't-9', state: 'CONFIRMED', hash: MINED, errorReason: null, operation: 'CONTRACT_EXECUTION' },
+      { id: 't-8', state: 'FAILED', hash: null, errorReason: 'INSUFFICIENT_TOKEN_BALANCE', operation: 'TRANSFER' }]);
+    expect(code(await wallet.transactions(0).catch(e => e))).toBe('invalid_input');
+  });
   it('lists every token the wallet holds, not only USDC', async () => {
     const { wallet } = await loggedIn();
     expect(await wallet.balances()).toEqual([{ symbol: 'EURC', address: '0xbef5f6d51cb62b58e6a8f77868681825c6fe21c1', amount: '1.5' },

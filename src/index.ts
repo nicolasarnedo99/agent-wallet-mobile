@@ -484,6 +484,22 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
     session,
     // From the session, no network call. The address is the same until the next login.
     async wallet(): Promise<WalletInfo> { return info(await live()); },
+    // The account's wallets on every chain of this environment: a first login makes one per chain, and this client uses one of them.
+    async wallets(): Promise<{ id: string; address: string; blockchain: string }[]> {
+      const s = await live();
+      const { wallets } = await plain(f, s, 'GET', '/v1/w3s/wallets?pageSize=50', s.userToken);
+      if (!Array.isArray(wallets)) throw broken('Circle sent no wallets');
+      return wallets.map((w: any) => ({ id: String(w?.id), address: String(w?.address), blockchain: String(w?.blockchain) }));
+    },
+    // This wallet's latest transactions at Circle, newest first as Circle lists them: contract calls and transfers, not x402
+    // payments, which the seller's facilitator sends.
+    async transactions(limit = 20): Promise<(TransactionStatus & { operation: string | null })[]> {
+      const s = await live();
+      if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new AgentWalletError('invalid_input', 'The limit is a whole number from 1 to 50');
+      const { transactions } = await plain(f, s, 'GET', `/v1/w3s/transactions?walletIds=${s.walletId}&pageSize=${limit}`, s.userToken);
+      if (!Array.isArray(transactions)) throw broken('Circle sent no transactions');
+      return transactions.map((t: any) => ({ ...status(String(t?.id), t), operation: typeof t?.operation === 'string' ? t.operation : null }));
+    },
     // Every token Circle reports for the wallet, amounts as decimal strings in whole tokens.
     async balances(): Promise<{ symbol: string; address: string; amount: string }[]> {
       const s = await live();

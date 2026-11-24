@@ -149,8 +149,13 @@ export function fakeCircle(network: Network = 'arc', options: { operation?: 'log
         expect(headers.get('x-correlation-state')).toBe('corr-1');
         return json(200, { data: { challengeId: 'auth-1', operation: 'login', state: 'COMPLETED', result: { accountRootId: 'root-1' } } });
       case 'GET /v1/w3s/wallets':
-        asUser(); expect(url.searchParams.get('blockchain')).toBe(NETWORKS[network].blockchain);
+        asUser(); // asked for one chain at login, and for every chain by wallets()
+        if (url.searchParams.get('blockchain') === null) return json(200, { data: { wallets: [wallet, { id: 'w-other', address: '0x1111111111111111111111111111111111111111', blockchain: network === 'arc' ? 'BASE-SEPOLIA' : 'ARB' }] } });
+        expect(url.searchParams.get('blockchain')).toBe(NETWORKS[network].blockchain);
         return json(200, { data: { wallets: [wallet] } });
+      case 'GET /v1/w3s/transactions':
+        asUser(); expect(Object.fromEntries(url.searchParams)).toEqual({ walletIds: wallet.id, pageSize: '2' });
+        return json(200, { data: { transactions: [{ id: 't-9', state: 'CONFIRMED', operation: 'CONTRACT_EXECUTION', txHash: MINED }, { id: 't-8', state: 'FAILED', operation: 'TRANSFER', errorReason: 'INSUFFICIENT_TOKEN_BALANCE' }] } });
       case `GET /v1/w3s/wallets/${wallet.id}/balances`: // both USDCs, so only the token address picks the right one
         asUser();
         return json(200, { data: { tokenBalances: [{ amount: '1.5', token: { symbol: 'EURC', tokenAddress: '0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1' } },
