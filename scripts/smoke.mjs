@@ -5,6 +5,7 @@
 //   npm run smoke -- --call  # the payment, then a zero USDC approve through call() and transaction()
 //   npm run smoke -- --fund --transfer   # also ask the faucet for USDC, and transfer 0.01 USDC to the payee
 //   npm run smoke -- --base --lists --no-pay    # an allowlist of one contract, a refused call, an allowed one; spends nothing
+//   npm run smoke -- --extras --no-pay           # sign a message and check it on-chain, list tokens, wallets and transactions; spends nothing
 //   npm run smoke -- --base --deploy --no-pay   # a first mainnet login with a never-used email: creates and deploys the wallet, spends nothing
 //   npm run smoke -- --fund --deploy     # for a brand-new wallet: faucet first, then the transaction that deploys it, then the payment
 //   npm run smoke -- --base --call --transfer --limits   # Base mainnet, REAL USDC: the payment costs 0.01, the transfer goes to
@@ -17,7 +18,7 @@
 import { writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
-import { createPublicClient, encodeFunctionData, erc20Abi, http, parseEventLogs } from 'viem';
+import { createPublicClient, encodeFunctionData, erc20Abi, hashMessage, http, parseEventLogs } from 'viem';
 import { AgentWalletError, NETWORKS, createAgentWallet, memoryStorage } from '../dist/index.js';
 import { payOnce } from '../examples/expo-app/x402.ts';
 
@@ -140,6 +141,22 @@ async function main() {
         console.log(`limits   after reset: ${JSON.stringify(result.limits.after)}`);
         if (custom(result.limits.after).length) console.error(`A CUSTOM LIMIT IS STILL SET. Run: circle wallet limit reset --address ${wallet.address} --chain BASE`);
       }
+    }
+    if (process.argv.includes('--extras')) {
+      // Read-only calls, and one signature checked on-chain: the wallet itself is asked whether the signature is its own (ERC-1271).
+      const text = `agent-wallet-mobile smoke ${result.ranAt}`;
+      const signature = await agent.signMessage(text);
+      const answer = await chain.readContract({ address: wallet.address, functionName: 'isValidSignature', args: [hashMessage(text), signature],
+        abi: [{ type: 'function', name: 'isValidSignature', stateMutability: 'view', inputs: [{ type: 'bytes32' }, { type: 'bytes' }], outputs: [{ type: 'bytes4' }] }] });
+      result.signMessage = answer === '0x1626ba7e' ? `valid on-chain (${(signature.length - 2) / 2} bytes)` : `NOT VALID on-chain: the wallet answered ${answer}`;
+      console.log(`message  ${result.signMessage}`);
+      result.balances = await agent.balances();
+      console.log(`tokens   ${JSON.stringify(result.balances)}`);
+      result.wallets = await agent.wallets();
+      console.log(`wallets  ${result.wallets.length} on ${result.wallets.map(found => found.blockchain).join(', ')}`);
+      result.transactions = await agent.transactions(3);
+      console.log(`history  ${JSON.stringify(result.transactions)}`);
+      if (!result.signMessage.startsWith('valid')) throw new Error('signMessage returned a signature the wallet does not accept');
     }
     if (process.argv.includes('--lists')) {
       // An allowlist of one contract (USDC): a call to another contract should be refused by Circle, a call to USDC should go
