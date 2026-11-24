@@ -233,6 +233,31 @@ describe('call', () => {
     await expect(wallet.deploy()).resolves.toEqual({ hash: MINED, transactionId: 't-9' });
     expect(circle.seen.execution).toMatchObject({ contractAddress: ARC_USDC, callData: `0x095ea7b3${'0'.repeat(24)}${WALLETS.arc.address.slice(2)}${'0'.repeat(64)}` });
   });
+  it('keeps waiting through a failed status check and an approval whose transaction is not listed yet, so a sent call is never reported as failed', async () => {
+    const { wallet, circle } = await loggedIn('arc', { flaky: true });
+    await expect(wallet.call({ to: SELLER, data: '0xabcdef' })).resolves.toEqual({ hash: MINED, transactionId: 't-9' });
+    expect(circle.seen.polls).toBe(3);
+  });
+  it('says the outcome is unknown, with the challenge to look up, when Circle may have taken the approval', async () => {
+    const { wallet } = await loggedIn('arc', { approveLost: true });
+    const error = await wallet.call({ to: SELLER, data: '0xabcdef' }).catch(e => e);
+    expect(code(error)).toBe('outcome_unknown');
+    expect(error.message).toContain('tx-1');
+  });
+  it("sends the caller's idempotency key, so a retry after an unknown outcome cannot send twice", async () => {
+    const { wallet, circle } = await loggedIn();
+    const idempotencyKey = '0b0c1d2e-3f40-4a5b-8c6d-7e8f90a1b2c3';
+    await wallet.call({ to: SELLER, data: '0xabcdef', idempotencyKey });
+    expect(circle.seen.execution.idempotencyKey).toBe(idempotencyKey);
+    await wallet.transfer({ to: SELLER, amount: '0.01', idempotencyKey });
+    expect(circle.seen.transfer.idempotencyKey).toBe(idempotencyKey);
+    expect(code(await wallet.call({ to: SELLER, data: '0xabcdef', idempotencyKey: 'again' }).catch(e => e))).toBe('invalid_input');
+  });
+  it('still works when the method is taken off the wallet object', async () => {
+    const { wallet } = await loggedIn();
+    const { deploy } = wallet;
+    await expect(deploy()).resolves.toEqual({ hash: MINED, transactionId: 't-9' });
+  });
   // Seen on Base mainnet on 24 Nov 2026, with an allowlist of one other contract.
   it("names Circle's refusal when the contract is not on the owner's allowlist, and opens no challenge", async () => {
     const { wallet, circle } = await loggedIn('arc', { offList: true });

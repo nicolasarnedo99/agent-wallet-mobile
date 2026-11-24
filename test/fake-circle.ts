@@ -56,7 +56,7 @@ export function unwrapPinhash(encrypted: string): string {
   return unaes(key.toString('base64'), pinhash_struct).pinhash;
 }
 
-export function fakeCircle(network: Network = 'arc', options: { operation?: 'login' | 'bootstrap'; transaction?: object; deactivate?: number; overLimit?: boolean; offList?: boolean; initialize?: 409 | 'FAILED'; customLimit?: boolean } = {}) {
+export function fakeCircle(network: Network = 'arc', options: { operation?: 'login' | 'bootstrap'; transaction?: object; deactivate?: number; overLimit?: boolean; offList?: boolean; flaky?: boolean; approveLost?: boolean; initialize?: 409 | 'FAILED'; customLimit?: boolean } = {}) {
   const { transaction = { state: 'CONFIRMED', txHash: MINED }, deactivate = 204 } = options;
   const DEFAULT_LIMIT: any = { policy_type: 'STABLECOIN_TRANSFER', rule_type: 'TRANSFER_LIMIT', per_tx_limit: '', daily_limit: '', weekly_limit: '', monthly_limit: '100', origin: 'DEFAULT' };
   let made = options.customLimit ? 1 : 0;
@@ -120,6 +120,7 @@ export function fakeCircle(network: Network = 'arc', options: { operation?: 'log
     const challenge = /^(GET|POST) \/v1\/w3s\/sdk\/user\/challenges\/(sig-1|tx-1|init-1)(\/approve)?$/.exec(`${method} ${path}`);
     if (challenge?.[3]) {
       seen.approve = unaes(user.key, body);
+      if (options.approveLost && challenge[2] === 'tx-1') return json(502, { message: 'bad gateway' }); // Circle may or may not have taken it
       return challenge[2] === 'sig-1' ? json(200, { data: { encrypt: aes(user.key, { data: { signature: SIGNATURE } }) } }) : json(200, {});
     }
     if (challenge) return json(200, { data: { encrypt: aes(user.key, { challengeId: challenge[2], publicKey: challengeKeys.publicKey, pinCodeUserShare: SHARE, requests: [], status: 'PENDING' }) } });
@@ -190,6 +191,8 @@ export function fakeCircle(network: Network = 'arc', options: { operation?: 'log
         return json(200, { data: { challenge: { status: options.initialize === 'FAILED' ? 'FAILED' : 'COMPLETE' } } });
       case 'GET /v1/w3s/user/challenges/tx-1': // not yet, then done, as Circle answers while its bundler works
         asUser(); seen.polls = (seen.polls ?? 0) + 1;
+        if (options.flaky && seen.polls === 1) return json(502, { message: 'bad gateway' });
+        if (options.flaky && seen.polls === 2) return json(200, { data: { challenge: { status: 'COMPLETE' } } }); // done, its transaction not listed yet
         return json(200, { data: { challenge: seen.polls === 1 ? { status: 'IN_PROGRESS' } : { status: 'COMPLETE', correlationIds: ['t-9'] } } });
       case 'GET /v1/w3s/transactions/t-9':
         asUser();
