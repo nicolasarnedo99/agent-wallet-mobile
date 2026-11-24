@@ -4,7 +4,7 @@ A small TypeScript client that logs in to a Circle Agent Wallet and signs with i
 
 **Unofficial.** This project is not affiliated with, sponsored by or endorsed by Circle. It talks to the same backend that Circle's own CLI (`@circle-fin/cli` 1.4.0) talks to, an API Circle has not documented for outside use and can change at any time. Read [Known gaps](#known-gaps) before relying on it for anything.
 
-The code is lifted out of Nest, an iPhone app where it paid for x402 resources from an agent wallet on Arc testnet. This package is that client on its own, with logout added and the app taken away. Its tests run against a stand-in for Circle's proxy. The built package has also run against Circle itself, from Node on Arc testnet: a login, a payment, a contract call and a logout (see the end of [Known gaps](#known-gaps)).
+The code is lifted out of Nest, an iPhone app where it paid for x402 resources from an agent wallet on Arc testnet. This package is that client on its own, with logout added and the app taken away. Its tests run against a stand-in for Circle's proxy. The built package has also run against Circle itself, from Node and from Nest on an iPhone, on Arc testnet and Base mainnet (see the end of [Known gaps](#known-gaps)).
 
 ## Quick start
 
@@ -101,7 +101,7 @@ Only an iPhone has run this code. Android goes through the same `react-native-ke
 
 Making the RSA-2048 login key in pure JavaScript is slow: about 22 seconds in Node with the JIT off, used as a stand-in for a phone's engine. It was not timed on the iPhone. Call `login.prepare()` when the email field gets focus so the wait hides behind typing. The key is made in 50 ms slices with a `setTimeout` between them. That is deliberate: node-forge's own async generation chains `setImmediate`, which React Native 0.88 runs as a microtask, and the app froze until the key was done.
 
-Last, what has and has not run for real. On 23 Nov 2026 the built package ran against Circle from Node on Arc testnet (`npm run smoke`): login, wallet, balance, one x402 payment, `call()`, `transaction()` and `logout('local')`, with both transactions checked on-chain and the old session refused afterwards. The hashes are under [On-chain](#on-chain). On a phone, the login, balance and typed-data signing code ran from Nest on an iPhone, where it lived as one file; this package itself has only been built and installed there. On 24 Nov 2026 it also ran on Base mainnet: login, an x402 payment, a contract call, a transfer, reading limits and budget, the owner login, `limits.set()`, `limits.reset()` and logout. `logout('all')` has never been sent to Circle.
+Last, what has and has not run for real. On 23 Nov 2026 the built package ran against Circle from Node on Arc testnet (`npm run smoke`): login, wallet, balance, one x402 payment, `call()`, `transaction()` and `logout('local')`, with both transactions checked on-chain and the old session refused afterwards. The hashes are under [On-chain](#on-chain). On a phone, Nest has used this package (0.2.0, from npm) on an iPhone since 23 Nov 2026: a login on each network, x402 payments on Arc and on Base, and a contract call on Arc. Limits, lists, transfers and first login have not been run from a phone. On 24 Nov 2026 it also ran on Base mainnet: login, an x402 payment, a contract call, a transfer, reading limits and budget, the owner login, `limits.set()`, `limits.reset()` and logout. `logout('all')` has never been sent to Circle.
 
 ## On-chain
 
@@ -122,7 +122,13 @@ Sent by this package on Base mainnet, on 24 Nov 2026, with real USDC and the gas
 - A transfer of 0.01 USDC from the wallet to itself: [`0xc3cafc69…e38a`](https://basescan.org/tx/0xc3cafc694fe5347b17f06bfaeea98eb280acf7d58221e63b3a43af004951e38a)
 - A spending limit of 0.005 USDC per payment set with a second emailed code, two refusals under it, and a reset to Circle's default of 100 USDC a month. None of those is a transaction.
 
-Sent by an iPhone, from the same client while it still lived inside Nest:
+Sent by this package from an iPhone, inside Nest, on 23 Nov 2026 (UTC):
+
+- An x402 payment of 0.01 USDC on Base mainnet to Agentic Reservations: [`0x1b3dc0b9…5f88`](https://basescan.org/tx/0x1b3dc0b90377eff263f1b361d8e69e90299a7129fa24bac5d861da097fb05f88)
+- An x402 payment of 0.01 USDC on Arc testnet: [`0xda48ce10…d46e`](https://explorer.testnet.arc.io/tx/0xda48ce10c39f76a56c73d76ffc3af07da751b1eebe4b5668b9e35349e4bbd46e?tab=token_transfers)
+- A contract call on Arc testnet, a 1.00 USDC buy through EntryPoint v0.7: [`0xa6cc0442…0f76`](https://explorer.testnet.arc.io/tx/0xa6cc0442a084ad03be75abeae9fe25e0a70cf95d9974715f10e7c3460bb50f76?tab=token_transfers)
+
+Sent by an iPhone earlier, from the same client while it still lived inside Nest:
 
 - Two 0.01 USDC payments on Arc testnet: [`0xe65982f0…c803`](https://explorer.testnet.arc.io/tx/0xe65982f0a2548aac3df2fd9fccd46dcb681e330c0a4e8465261b7bf386d7c803?tab=token_transfers) and [`0x93e54e3e…b09e`](https://explorer.testnet.arc.io/tx/0x93e54e3e3b55f212e99954ba6c74183dfb170d2f908b4b708b58cc2e6264b09e?tab=token_transfers)
 - 0.01 USDC on Base mainnet to Agentic Reservations, a seller from Circle's Agent Marketplace: [`0xf5266222…4d65`](https://basescan.org/tx/0xf526622256757407cccee3499161a4eebad77d5b3fdc3433cfe3079dda394d65)
