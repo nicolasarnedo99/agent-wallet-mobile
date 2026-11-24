@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 (not published yet)
+## 0.2.1 (24 Nov 2026)
 
 Added, from the CLI's source. The first two lines ran against Circle on Arc testnet on 24 Nov 2026, the message signature checked on-chain through ERC-1271; the rest is tested against the stand-in only:
 
