@@ -394,6 +394,13 @@ describe('bridge', () => {
     const [params] = decodeFunctionData({ abi: BRIDGE_ABI, data: circle.seen.executions[1].callData }).args as unknown as [any];
     expect(params).toMatchObject({ destinationDomain: 26, mintRecipient: `0x${'0'.repeat(24)}${'1'.repeat(40)}`, burnToken: BASE_USDC });
   });
+  it("reads the USDC the account holds on the bridge's other chain, where the client is not otherwise looking", async () => {
+    const { wallet, circle } = await bridging('arc');
+    expect(await wallet.bridge.balance()).toBe('20.09');
+    expect(circle.calls).toEqual(['GET /v1/w3s/wallets', 'GET /v1/w3s/wallets/w-there/balances']);
+    const none = await loggedIn('arc', { noOtherWallet: true });
+    expect(code(await none.wallet.bridge.balance().catch(e => e))).toBe('protocol');
+  });
   it('says where a bridge stands: arrived once the forwarder has minted, pending before', async () => {
     const { wallet } = await bridging('arc');
     expect(await wallet.bridge.status(MINED)).toEqual({ status: 'complete', arrivalHash: ARRIVED });

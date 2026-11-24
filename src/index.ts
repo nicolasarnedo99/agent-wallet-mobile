@@ -639,6 +639,16 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
               feeRecipient: route.contract, destinationDomain: route.toDomain, minFinalityThreshold: 1000 }, FORWARD] }) });
           return { ...sent, to: route.to, fee: decimal(maxFee) };
         },
+        // USDC this account holds on the other chain, as Circle reports it: what a bridge to your own address adds to.
+        async balance(): Promise<string> {
+          const s = await live();
+          const { wallets } = await plain(f, s, 'GET', `/v1/w3s/wallets?pageSize=50&blockchain=${route.to}`, s.userToken);
+          const there = Array.isArray(wallets) ? wallets.find((w: any) => typeof w?.id === 'string' && w.blockchain === route.to) : undefined;
+          if (!there) throw broken(`This account has no wallet on ${route.to}`);
+          const { tokenBalances } = await plain(f, s, 'GET', `/v1/w3s/wallets/${there.id}/balances`, s.userToken);
+          const usdc = (Array.isArray(tokenBalances) ? tokenBalances : []).filter((b: any) => b?.token?.symbol === 'USDC' && typeof b.amount === 'string');
+          return (usdc.find((b: any) => b.token.tokenAddress) ?? usdc[0])?.amount ?? '0'; // the token itself, where the chain also lists USDC as its gas
+        },
         // Where a bridge stands, by its burn hash: `arrivalHash` is the mint on the other chain, and only then has the USDC arrived.
         async status(hash: string): Promise<{ status: string; arrivalHash: Hex | null }> {
           if (!/^0x[0-9a-fA-F]{64}$/.test(hash)) throw new AgentWalletError('invalid_input', 'Not a transaction hash');

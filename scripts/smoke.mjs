@@ -4,6 +4,7 @@
 //   npm run smoke            # the payment
 //   npm run smoke -- --call  # the payment, then a zero USDC approve through call() and transaction()
 //   npm run smoke -- --fund --transfer   # also ask the faucet for USDC, and transfer 0.01 USDC to the payee
+//   npm run smoke -- --base --extras --rules --no-pay   # on mainnet: the read calls and a signed message, then the allowlist and blocklists; at most 0.01 USDC
 //   npm run smoke -- --base --lists --no-pay    # an allowlist of one contract, a refused call, an allowed one; spends nothing
 //   npm run smoke -- --bridge --no-pay           # bridge 0.10 test USDC from Arc testnet to Base Sepolia and wait for it to arrive
 //   npm run smoke -- --extras --no-pay           # sign a message and check it on-chain, list tokens, wallets and transactions; spends nothing
@@ -51,8 +52,8 @@ async function main() {
   if (!RESOURCE || !/^0x[0-9a-fA-F]{40}$/.test(PAYEE ?? '')) throw new Error('Set the seller URL and its payee in .env.local (see the top of this file)');
   if (BASE && process.argv.includes('--fund')) throw new Error('There is no faucet on mainnet');
   if (BASE && process.argv.includes('--bridge')) throw new Error('The bridge run is testnet only until it has worked there once');
-  if (!BASE && (process.argv.includes('--limits') || process.argv.includes('--lists'))) throw new Error('Limits exist on mainnet only: add --base');
-  if (BASE) console.log(process.argv.includes('--no-pay') ? 'BASE MAINNET: no payment in this run.' : 'BASE MAINNET: this run spends 0.01 real USDC.');
+  if (!BASE && (process.argv.includes('--limits') || process.argv.includes('--lists') || process.argv.includes('--rules'))) throw new Error('Limits exist on mainnet only: add --base');
+  if (BASE) console.log(!process.argv.includes('--no-pay') ? 'BASE MAINNET: this run spends 0.01 real USDC.' : process.argv.includes('--rules') ? 'BASE MAINNET: this run spends nothing if Circle refuses a payment it should refuse, and 0.01 real USDC if it does not.' : 'BASE MAINNET: no payment in this run.');
   const withCall = process.argv.includes('--call');
   const result = { package: 'dist/ built from this checkout', network: NET, ranAt: new Date().toISOString() };
   const agent = createAgentWallet({ network: NET });
@@ -176,9 +177,49 @@ async function main() {
       console.log(`tokens   ${JSON.stringify(result.balances)}`);
       result.wallets = await agent.wallets();
       console.log(`wallets  ${result.wallets.length} on ${result.wallets.map(found => found.blockchain).join(', ')}`);
+      result.otherChain = await agent.bridge.balance();
+      console.log(`there    ${result.otherChain} USDC on the bridge's other chain`);
       result.transactions = await agent.transactions(3);
       console.log(`history  ${JSON.stringify(result.transactions)}`);
       if (!result.signMessage.startsWith('valid')) throw new Error('signMessage returned a signature the wallet does not accept');
+    }
+    if (process.argv.includes('--rules')) {
+      // The lists never yet run against Circle. A recipient allowlist holding only this wallet: is a signed x402 payment to the
+      // seller then refused, and does a transfer to the wallet itself still pass? Then a contract blocklist and a recipient
+      // blocklist together, one removed by its id. Worst case, if Circle lets the payment through: 0.01 USDC is spent.
+      const OTHER = '0x4200000000000000000000000000000000000006'; // WETH on Base
+      const custom = rows => rows.filter(row => row.origin === 'CUSTOM');
+      if (custom(await agent.limits.read()).length) throw new Error('A custom rule is already set and this test would remove it: reset it yourself first');
+      await agent.limits.owner.start(await ask('Owner login for changing rules. The same email again (typing is hidden): '));
+      await agent.limits.owner.finish(await ask('The owner code (typing is hidden): '));
+      result.rules = {};
+      try {
+        await agent.limits.setList('recipient-allowlist', [wallet.address]);
+        console.log(`rules    recipient allowlist set: ${JSON.stringify(custom(await agent.limits.read()).map(row => [row.ruleType, row.addresses]))}`);
+        result.rules.paymentOffList = await payOnce(RESOURCE, await agent.x402Signer(), TERMS).then(paid => `NOT REFUSED: paid ${paid.transaction}`, error => `${error.code ?? 'error'}: ${error.message}`);
+        console.log(`rules    an x402 payment to a recipient off the allowlist: ${result.rules.paymentOffList}`);
+        result.rules.transferOnList = await agent.transfer({ to: wallet.address, amount: '0.01' }).then(sent => `ok ${sent.hash}`, error => `${error.code}: ${error.message}`);
+        console.log(`rules    a transfer to the one allowed recipient: ${result.rules.transferOnList}`);
+        await agent.limits.reset();
+        await agent.limits.setList('contract-blocklist', [OTHER]);
+        await agent.limits.setList('recipient-blocklist', [PAYEE]);
+        const both = custom(await agent.limits.read());
+        console.log(`rules    two blocklists set: ${JSON.stringify(both.map(row => [row.ruleType, row.addresses]))}`);
+        const zeroApprove = encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [wallet.address, 0n] });
+        result.rules.blockedContract = await agent.call({ to: OTHER, data: zeroApprove }).then(sent => `NOT REFUSED: ${sent.hash}`, error => `${error.code}: ${error.message}`);
+        console.log(`rules    a call to the blocked contract: ${result.rules.blockedContract}`);
+        const recipientRule = both.find(row => row.ruleType === 'RECIPIENT_BLOCKLIST');
+        if (!recipientRule) throw new Error('Circle shows no recipient blocklist after setList()');
+        await agent.limits.reset(recipientRule.id);
+        result.rules.afterResetOne = custom(await agent.limits.read()).map(row => row.ruleType);
+        console.log(`rules    after removing the recipient blocklist by its id: ${JSON.stringify(result.rules.afterResetOne)}`);
+      } finally {
+        await agent.limits.reset().catch(error => console.error(`RULES NOT RESET (${error.message}). Run: circle wallet limit reset --address ${wallet.address} --chain BASE`));
+        agent.limits.owner.end();
+        result.rules.after = await agent.limits.read();
+        console.log(`rules    after reset: ${JSON.stringify(result.rules.after.map(row => [row.ruleType, row.origin]))}`);
+        if (custom(result.rules.after).length) console.error(`A CUSTOM RULE IS STILL SET. Run: circle wallet limit reset --address ${wallet.address} --chain BASE`);
+      }
     }
     if (process.argv.includes('--lists')) {
       // An allowlist of one contract (USDC): a call to another contract should be refused by Circle, a call to USDC should go

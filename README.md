@@ -46,6 +46,7 @@ await agent.fund();                   // Circle's testnet faucet
 await agent.bridge.quote('5');        // { to, amount, fee, total }
 const burn = await agent.bridge.send({ amount: '5' });
 await agent.bridge.status(burn.hash); // { status, arrivalHash }: arrived once arrivalHash is set
+await agent.bridge.balance();         // USDC the account holds on that other chain
 
 // Paid services in Circle's Agent Marketplace. Public: it needs no login.
 const services = await searchServices({ query: 'restaurants' });
@@ -136,7 +137,7 @@ Testnet and mainnet are separate Circle accounts with separate logins and wallet
 
 **A new wallet cannot sign until it is deployed.** An account's first login creates its wallets, and this client does that itself on both networks. The new wallet is a smart contract account that is not on-chain yet, and Circle answers "Cannot generate a signature from an undeployed wallet" until it has sent one transaction. `deploy()` sends one that moves nothing, a zero USDC approve to the wallet itself, with the gas sponsored even for a wallet holding nothing.
 
-**The bridge has moved test USDC only.** `bridge.send()` was written from the CLI's source and Circle's bridge kit: an approval, then a burn through Circle's bridge contract with its forwarder asked to mint on the other chain. On 24 Nov 2026 it took 0.10 USDC from Arc testnet to Base Sepolia (see [On-chain](#on-chain)). The mainnet route, Base to Arc, is the same code with other addresses and has not been run; a burn cannot be undone, so send a small amount first. It covers those two routes only, and this client reads balances on the first chain of each pair, not the second.
+**The bridge has moved test USDC only.** `bridge.send()` was written from the CLI's source and Circle's bridge kit: an approval, then a burn through Circle's bridge contract with its forwarder asked to mint on the other chain. On 24 Nov 2026 it took 0.10 USDC from Arc testnet to Base Sepolia (see [On-chain](#on-chain)). The mainnet route, Base to Arc, is the same code with other addresses and has not been run; a burn cannot be undone, so send a small amount first. It covers those two routes only. `bridge.balance()` reads the USDC the account holds on the second chain of the pair, as Circle reports it; it is tested against the stand-in only.
 
 **Not built.** Gateway (Circle's prepaid balance for batched sellers), fee estimates, raw transactions, passkeys, the login path for accounts from before Circle's current flow, and the CLI's swap, earn and borrow commands. Earn is not possible yet: the CLI itself refuses it for agent wallets ("not yet supported for agent wallets").
 

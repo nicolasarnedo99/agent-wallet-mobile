@@ -56,7 +56,7 @@ export function unwrapPinhash(encrypted: string): string {
   return unaes(key.toString('base64'), pinhash_struct).pinhash;
 }
 
-export function fakeCircle(network: Network = 'arc', options: { operation?: 'login' | 'bootstrap'; transaction?: object; deactivate?: number; overLimit?: boolean; offList?: boolean; flaky?: boolean; approveLost?: boolean; busy?: boolean; alreadyApproved?: boolean; initialize?: 409 | 'FAILED'; customLimit?: boolean } = {}) {
+export function fakeCircle(network: Network = 'arc', options: { operation?: 'login' | 'bootstrap'; transaction?: object; deactivate?: number; overLimit?: boolean; offList?: boolean; flaky?: boolean; approveLost?: boolean; busy?: boolean; alreadyApproved?: boolean; noOtherWallet?: boolean; initialize?: 409 | 'FAILED'; customLimit?: boolean } = {}) {
   const { transaction = { state: 'CONFIRMED', txHash: MINED }, deactivate = 204 } = options;
   const DEFAULT_LIMIT: any = { policy_type: 'STABLECOIN_TRANSFER', rule_type: 'TRANSFER_LIMIT', per_tx_limit: '', daily_limit: '', weekly_limit: '', monthly_limit: '100', origin: 'DEFAULT' };
   let made = options.customLimit ? 1 : 0;
@@ -152,8 +152,14 @@ export function fakeCircle(network: Network = 'arc', options: { operation?: 'log
       case 'GET /v1/w3s/wallets':
         asUser(); // asked for one chain at login, and for every chain by wallets()
         if (url.searchParams.get('blockchain') === null) return json(200, { data: { wallets: [wallet, { id: 'w-other', address: '0x1111111111111111111111111111111111111111', blockchain: network === 'arc' ? 'BASE-SEPOLIA' : 'ARB' }] } });
+        if (url.searchParams.get('blockchain') === (network === 'arc' ? 'BASE-SEPOLIA' : 'ARC')) // the bridge's other chain
+          return json(200, { data: { wallets: options.noOtherWallet ? [] : [{ id: 'w-there', address: wallet.address, blockchain: url.searchParams.get('blockchain') }] } });
         expect(url.searchParams.get('blockchain')).toBe(NETWORKS[network].blockchain);
         return json(200, { data: { wallets: [wallet] } });
+      case 'GET /v1/w3s/wallets/w-there/balances': // a chain whose gas token is USDC lists it twice; the other token is not USDC
+        asUser();
+        return json(200, { data: { tokenBalances: [{ amount: '3', token: { symbol: 'ETH' } }, { amount: '20.09', token: { symbol: 'USDC' } },
+          { amount: '20.09', token: { symbol: 'USDC', tokenAddress: '0x036CbD53842c5426634e7929541eC2318f3dCF7e' } }] } });
       case 'GET /v1/w3s/transactions':
         asUser(); expect(Object.fromEntries(url.searchParams)).toEqual({ walletIds: wallet.id, pageSize: '2' });
         return json(200, { data: { transactions: [{ id: 't-9', state: 'CONFIRMED', operation: 'CONTRACT_EXECUTION', txHash: MINED }, { id: 't-8', state: 'FAILED', operation: 'TRANSFER', errorReason: 'INSUFFICIENT_TOKEN_BALANCE' }] } });
