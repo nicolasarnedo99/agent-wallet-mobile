@@ -1,5 +1,6 @@
 import forge from 'node-forge';
 import { decodePaymentSignatureHeader, encodePaymentRequiredHeader, encodePaymentResponseHeader } from '@x402/core/http';
+import { decodeFunctionData, parseAbi } from 'viem';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { checkRequirement, payOnce, type Terms } from '../examples/expo-app/x402.js';
 import { AgentWalletError, createAgentWallet, isExpired, keychainStorage, memoryStorage, searchServices, type Network, type Session, type Storage } from '../src/index.js';
@@ -346,6 +347,65 @@ describe('call', () => {
     const failure = await wallet.call({ to: SELLER, data: '0xabcdef' }).catch(e => e);
     expect(code(failure)).toBe('transaction_failed');
     expect(failure.message).toBe('Circle transaction t-9 FAILED: EXECUTION_REVERTED');
+  });
+});
+
+describe('bridge', () => {
+  // Circle's own fee answer for Arc testnet to Base Sepolia on 24 Nov 2026, and the messages answer once the forwarder has minted.
+  const FEES = [{ finalityThreshold: 1000, minimumFee: 1, forwardFee: { low: 52595, med: 52680, high: 52875 } }, { finalityThreshold: 2000, minimumFee: 0, forwardFee: { low: 1, med: 2, high: 3 } }];
+  const ARRIVED = `0x${'ab'.repeat(32)}`;
+  const bridging = async (network: Network, fees: unknown = FEES) => {
+    const made = await loggedIn(network); const asked: string[] = [];
+    const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (!url.includes('iris-api')) return made.circle.fetch(input, init);
+      asked.push(url); expect(init?.headers).toBeUndefined(); // public: no token goes to it
+      if (url.includes('/v2/burn/USDC/fees/')) return new Response(JSON.stringify(fees));
+      return url.endsWith(MINED) ? new Response(JSON.stringify({ messages: [{ status: 'complete', forwardTxHash: ARRIVED }] })) : new Response('{}', { status: 404 });
+    }) as typeof globalThis.fetch;
+    return { ...made, asked, wallet: createAgentWallet({ network, fetch, storage: made.storage }) };
+  };
+  const BRIDGE_ABI = parseAbi(['function bridgeWithPreapprovalAndHook((uint256 amount, uint256 maxFee, uint256 fee, bytes32 mintRecipient, bytes32 destinationCaller, address burnToken, address feeRecipient, uint32 destinationDomain, uint32 minFinalityThreshold) bridgeParams, bytes hookData)',
+    'function approve(address spender, uint256 amount)']);
+
+  it("quotes Circle's forwarding fee plus its protocol fee, and what the wallet must hold", async () => {
+    const { wallet, asked } = await bridging('arc');
+    expect(await wallet.bridge.quote('0.10')).toEqual({ to: 'BASE-SEPOLIA', amount: '0.1', fee: '0.05269', total: '0.15269' }); // 52680 + 1 basis point of 100000
+    expect(asked).toEqual(['https://iris-api-sandbox.circle.com/v2/burn/USDC/fees/26/6?forward=true']);
+  });
+  it('approves the bridge for the total, then burns with the forwarder asked to mint to the same address on the other chain', async () => {
+    const { wallet, circle } = await bridging('arc');
+    expect(await wallet.bridge.send({ amount: '0.10' })).toEqual({ hash: MINED, transactionId: 't-9', to: 'BASE-SEPOLIA', fee: '0.05269' });
+    const [approve, burn] = circle.seen.executions;
+    expect(approve.contractAddress).toBe(ARC_USDC);
+    expect(decodeFunctionData({ abi: BRIDGE_ABI, data: approve.callData }).args).toEqual(['0xC5567a5E3370d4DBfB0540025078e283e36A363d', 152690n]);
+    expect(burn.contractAddress).toBe('0xC5567a5E3370d4DBfB0540025078e283e36A363d');
+    expect(burn.callData.slice(0, 10)).toBe('0x513e1175');
+    const [params, hookData] = decodeFunctionData({ abi: BRIDGE_ABI, data: burn.callData }).args as unknown as [any, string];
+    expect(params).toEqual({ amount: 152690n, maxFee: 52690n, fee: 0n, mintRecipient: `0x${'0'.repeat(24)}${WALLETS.arc.address.slice(2)}`, destinationCaller: `0x${'0'.repeat(64)}`,
+      burnToken: '0x3600000000000000000000000000000000000000', feeRecipient: '0xC5567a5E3370d4DBfB0540025078e283e36A363d', destinationDomain: 6, minFinalityThreshold: 1000 });
+    expect(hookData).toBe('0x636374702d666f72776172640000000000000000000000000000000000000000');
+  });
+  it('goes from Base to Arc on mainnet, through the mainnet bridge and the live fee service', async () => {
+    const { wallet, circle, asked } = await bridging('base');
+    await wallet.bridge.send({ amount: '0.10', recipient: '0x1111111111111111111111111111111111111111' });
+    expect(asked[0]).toBe('https://iris-api.circle.com/v2/burn/USDC/fees/6/26?forward=true');
+    expect(circle.seen.executions[1].contractAddress).toBe('0xB3FA262d0fB521cc93bE83d87b322b8A23DAf3F0');
+    const [params] = decodeFunctionData({ abi: BRIDGE_ABI, data: circle.seen.executions[1].callData }).args as unknown as [any];
+    expect(params).toMatchObject({ destinationDomain: 26, mintRecipient: `0x${'0'.repeat(24)}${'1'.repeat(40)}`, burnToken: BASE_USDC });
+  });
+  it('says where a bridge stands: arrived once the forwarder has minted, pending before', async () => {
+    const { wallet } = await bridging('arc');
+    expect(await wallet.bridge.status(MINED)).toEqual({ status: 'complete', arrivalHash: ARRIVED });
+    expect(await wallet.bridge.status(`0x${'12'.repeat(32)}`)).toEqual({ status: 'pending', arrivalHash: null });
+  });
+  it('sends nothing when the route has no forwarder, the amount is not a USDC amount, or the wallet holds too little', async () => {
+    const none = await bridging('arc', [{ finalityThreshold: 1000, minimumFee: 0 }]);
+    expect(code(await none.wallet.bridge.send({ amount: '0.10' }).catch(e => e))).toBe('invalid_input');
+    const { wallet, circle } = await bridging('arc');
+    for (const amount of ['0', '1.0000001', '1e2', '-1']) expect(code(await wallet.bridge.send({ amount }).catch(e => e))).toBe('invalid_input');
+    expect(code(await wallet.bridge.send({ amount: '19.99' }).catch(e => e))).toBe('invalid_input'); // the stand-in wallet holds 19.99, and the fee comes on top
+    expect(circle.seen.executions).toEqual([]);
   });
 });
 

@@ -7,7 +7,7 @@
 import forge from 'node-forge';
 import { gcm } from '@noble/ciphers/aes.js';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { getTypesForEIP712Domain } from 'viem';
+import { encodeFunctionData, getTypesForEIP712Domain } from 'viem';
 import { toAccount, type LocalAccount } from 'viem/accounts';
 
 // Circle keeps testnet and mainnet apart: each has its own proxy, login and wallets, so a session belongs to one network.
@@ -16,6 +16,27 @@ export const NETWORKS = {
   arc: { proxy: 'https://agentic-wallet.circle.com/proxy/test', blockchain: 'ARC-TESTNET', chainId: 5042002, usdc: '0x3600000000000000000000000000000000000000' },
   base: { proxy: 'https://agentic-wallet.circle.com/proxy/live', blockchain: 'BASE', chainId: 8453, usdc: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913' },
 } as const;
+// Moving USDC to the other chain of each pair with CCTP v2 and Circle's Forwarding Service, as the CLI's `bridge transfer` does
+// for an agent wallet: the wallet burns on this chain and Circle mints on the other, so no gas is needed there. `contract` is
+// Circle's bridge contract (from its bridge kit), `domain` and `toDomain` the two chains' CCTP numbers, `iris` Circle's public
+// fee and status service. Testnet bridges to testnet and mainnet to mainnet, never across.
+const BRIDGES = {
+  arc: { to: 'BASE-SEPOLIA', domain: 26, toDomain: 6, contract: '0xC5567a5E3370d4DBfB0540025078e283e36A363d', iris: 'https://iris-api-sandbox.circle.com' },
+  base: { to: 'ARC', domain: 6, toDomain: 26, contract: '0xB3FA262d0fB521cc93bE83d87b322b8A23DAf3F0', iris: 'https://iris-api.circle.com' },
+} as const;
+const BRIDGE_ABI = [{ type: 'function', name: 'bridgeWithPreapprovalAndHook', stateMutability: 'nonpayable', outputs: [], inputs: [
+  { name: 'bridgeParams', type: 'tuple', components: [{ name: 'amount', type: 'uint256' }, { name: 'maxFee', type: 'uint256' }, { name: 'fee', type: 'uint256' },
+    { name: 'mintRecipient', type: 'bytes32' }, { name: 'destinationCaller', type: 'bytes32' }, { name: 'burnToken', type: 'address' }, { name: 'feeRecipient', type: 'address' },
+    { name: 'destinationDomain', type: 'uint32' }, { name: 'minFinalityThreshold', type: 'uint32' }] },
+  { name: 'hookData', type: 'bytes' }] }] as const;
+const FORWARD = '0x636374702d666f72776172640000000000000000000000000000000000000000'; // "cctp-forward", padded: asks Circle to mint for us
+// USDC amounts: a decimal string in whole tokens to base units (six decimals) and back.
+const units = (amount: string) => {
+  if (typeof amount !== 'string' || !/^\d+(\.\d{1,6})?$/.test(amount)) throw new AgentWalletError('invalid_input', 'The amount is a USDC amount like "0.10", with at most six decimals');
+  const [whole, fraction = ''] = amount.split('.');
+  return BigInt(whole!) * 1_000_000n + BigInt(fraction.padEnd(6, '0'));
+};
+const decimal = (subunits: bigint) => `${subunits / 1_000_000n}.${(subunits % 1_000_000n).toString().padStart(6, '0')}`.replace(/\.?0+$/, '');
 // The chains a first login creates wallets on, by network: the CLI's own lists (chain-map.ts).
 const FIRST_LOGIN_CHAINS = { arc: ['ETH-SEPOLIA', 'MATIC-AMOY', 'ARB-SEPOLIA', 'AVAX-FUJI', 'OP-SEPOLIA', 'BASE-SEPOLIA', 'UNI-SEPOLIA', 'MONAD-TESTNET', 'ARC-TESTNET'],
   base: ['ETH', 'MATIC', 'ARB', 'AVAX', 'OP', 'BASE', 'UNI', 'MONAD', 'ARC'] };
@@ -571,6 +592,63 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
       const s = await live();
       return status(id, (await plain(f, s, 'GET', `/v1/w3s/transactions/${encodeURIComponent(id)}`, s.userToken)).transaction);
     },
+    // USDC to this account's wallet on the other chain of the pair: Arc testnet to Base Sepolia, Base to Arc mainnet. Circle
+    // charges a forwarding fee, a few cents, plus a protocol fee, both taken on top of the amount. The burn cannot be undone,
+    // and the USDC arrives when Circle's forwarder mints it, usually within a minute: keep the hash and ask status().
+    bridge: (() => {
+      const route = BRIDGES[network];
+      const iris = async (path: string) => {
+        const response = await f(`${route.iris}${path}`);
+        if (response.status === 404) return null;
+        if (!response.ok) throw new AgentWalletError('http', `Circle's bridge service answered ${response.status}`, response.status);
+        return response.json().catch(() => { throw broken("Circle's bridge service sent something unreadable"); });
+      };
+      async function price(amount: string) {
+        const wanted = units(amount);
+        if (wanted <= 0n) throw new AgentWalletError('invalid_input', 'The amount is more than zero');
+        const answer: any = await iris(`/v2/burn/USDC/fees/${route.domain}/${route.toDomain}?forward=true`);
+        const rows = Array.isArray(answer) ? answer : Array.isArray(answer?.data) ? answer.data : null;
+        if (!rows) throw broken("Circle's bridge service sent no fees");
+        const fast = rows.find((row: any) => Number(row?.finalityThreshold) === 1000);
+        const forward = fast?.forwardFee?.med ?? fast?.forwardFee?.medium;
+        if (!/^\d+$/.test(String(forward))) throw new AgentWalletError('invalid_input', `Circle has no forwarder from here to ${route.to}`);
+        const points = Number(fast.minimumFee ?? 0); // the protocol fee, in basis points of the amount
+        if (!Number.isFinite(points) || points < 0) throw broken("Circle's bridge service sent an unreadable fee");
+        const maxFee = BigInt(forward) + (wanted * BigInt(Math.round(points * 1_000_000))) / 10_000_000_000n;
+        return { wanted, maxFee, total: wanted + maxFee };
+      }
+      return {
+        async quote(amount: string): Promise<{ to: string; amount: string; fee: string; total: string }> {
+          const { wanted, maxFee, total } = await price(amount);
+          return { to: route.to, amount: decimal(wanted), fee: decimal(maxFee), total: decimal(total) };
+        },
+        // Two transactions from this wallet: an approval of Circle's bridge contract for the total, then the burn. The hash is the burn's.
+        async send(tx: { amount: string; recipient?: string }): Promise<{ hash: Hex; transactionId: string; to: string; fee: string }> {
+          const s = await live();
+          const recipient = tx.recipient ?? s.address;
+          if (!/^0x[0-9a-fA-F]{40}$/.test(recipient)) throw new AgentWalletError('invalid_input', 'Not an address');
+          const { maxFee, total } = await price(tx.amount);
+          const { tokenBalances } = await plain(f, s, 'GET', `/v1/w3s/wallets/${s.walletId}/balances`, s.userToken);
+          const held = (Array.isArray(tokenBalances) ? tokenBalances : []).find((b: any) => String(b?.token?.tokenAddress).toLowerCase() === NETWORKS[network].usdc)?.amount;
+          if (typeof held !== 'string' || !/^\d+(\.\d+)?$/.test(held) || units(held.replace(/(\.\d{6})\d+$/, '$1')) < total)
+            throw new AgentWalletError('invalid_input', `The wallet holds ${held ?? '0'} USDC and this needs ${decimal(total)} with the fee`);
+          const padded = (address: string) => `0x${address.slice(2).toLowerCase().padStart(64, '0')}` as Hex;
+          await call({ to: NETWORKS[network].usdc, data: `0x095ea7b3${padded(route.contract).slice(2)}${total.toString(16).padStart(64, '0')}` });
+          const sent = await call({ to: route.contract, data: encodeFunctionData({ abi: BRIDGE_ABI, functionName: 'bridgeWithPreapprovalAndHook', args: [
+            { amount: total, maxFee, fee: 0n, mintRecipient: padded(recipient), destinationCaller: `0x${'0'.repeat(64)}`, burnToken: NETWORKS[network].usdc,
+              feeRecipient: route.contract, destinationDomain: route.toDomain, minFinalityThreshold: 1000 }, FORWARD] }) });
+          return { ...sent, to: route.to, fee: decimal(maxFee) };
+        },
+        // Where a bridge stands, by its burn hash: `arrivalHash` is the mint on the other chain, and only then has the USDC arrived.
+        async status(hash: string): Promise<{ status: string; arrivalHash: Hex | null }> {
+          if (!/^0x[0-9a-fA-F]{64}$/.test(hash)) throw new AgentWalletError('invalid_input', 'Not a transaction hash');
+          const answer: any = await iris(`/v2/messages/${route.domain}?transactionHash=${hash}`);
+          const message = Array.isArray(answer?.messages) ? answer.messages[0] : undefined;
+          if (!message) return { status: 'pending', arrivalHash: null };
+          return { status: String(message.status), arrivalHash: /^0x[0-9a-fA-F]{64}$/.test(String(message.forwardTxHash)) ? message.forwardTxHash : null };
+        },
+      };
+    })(),
     // Circle's spending limits on this wallet. They exist on mainnet only, and Circle enforces them before it signs or sends anything.
     // Reading takes the agent's session. Changing takes the wallet owner's own login, a second emailed code: the agent cannot raise
     // its own limits.

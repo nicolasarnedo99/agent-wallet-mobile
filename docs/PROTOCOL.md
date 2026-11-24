@@ -147,6 +147,18 @@ Five more were read in the CLI's source and, from this library, have run against
 
 Circle sends a transaction once its challenge is approved, whatever the client then sees. So after the approval this library treats any failed status check as no answer and asks again, and it reports running out of time as `outcome_unknown`, never as a failure. An approval that fails on the way with anything but a 4xx is `outcome_unknown` too, since it may have arrived. A 4xx on the approval is checked against the challenge itself: if Circle already shows it complete, as on a retry (the CLI treats a 403 there the same way, `commands/wallet/helpers.ts:228`), the wait goes on. A completed challenge names its transaction a moment later, so `COMPLETE` without `correlationIds` is waited on. The creation calls carry an `idempotencyKey`; a caller who passes their own can retry safely. That Circle treats a repeated key as the same request is how its API describes the field, not something this library has tested.
 
+## Bridge
+
+Read from the CLI's `bridge transfer` for an agent wallet (`commands/bridge/transfer.ts:774`) and from the bridge kit bundled in it. From this library it has run against the stand-in only; the fee quote was read from Circle once (Arc testnet to Base Sepolia, 24 Nov 2026: a forwarding fee of 0.05268 USDC and no protocol fee).
+
+1. `GET {iris}/v2/burn/USDC/fees/{sourceDomain}/{destinationDomain}?forward=true`, no token. `iris` is `https://iris-api-sandbox.circle.com` on testnet and `https://iris-api.circle.com` on mainnet; the domains are CCTP's (Base 6, Arc 26). Take the row with `finalityThreshold` 1000: `forwardFee.med` is the forwarder's fee in base units and `minimumFee` the protocol fee in basis points of the amount. No `forwardFee` means the route has no forwarder.
+2. `maxFee` is the two fees added; the total burned is the amount plus `maxFee`.
+3. A contract call on USDC: `approve(bridge, total)`. The CLI sends it as `abiFunctionSignature` and `abiParameters`; this library sends the same call as `callData`.
+4. A contract call on Circle's bridge contract (testnet `0xC5567a5E3370d4DBfB0540025078e283e36A363d`, mainnet `0xB3FA262d0fB521cc93bE83d87b322b8A23DAf3F0`): `bridgeWithPreapprovalAndHook((amount: total, maxFee, fee: 0, mintRecipient, destinationCaller: 0, burnToken: USDC, feeRecipient: bridge, destinationDomain, minFinalityThreshold: 1000), hookData)`, where `hookData` is the text `cctp-forward` padded to 32 bytes. That hook asks Circle's forwarder to mint on the other chain, so the wallet needs no gas there.
+5. `GET {iris}/v2/messages/{sourceDomain}?transactionHash={burn}`: 404 until Circle has seen the burn, then `{messages: [{status, forwardTxHash}]}`. The USDC has arrived when `forwardTxHash` is set; `status: "complete"` can come earlier.
+
+Both chains must be testnet or both mainnet. The CLI waits five minutes for the forwarder and then reports the burn as pending.
+
 ## Spending limits
 
 Mainnet only. These routes belong to the service itself, at `https://agentic-wallet.circle.com`, outside every proxy. Read from the CLI's source, and run from this library against Circle on Base mainnet on 24 Nov 2026. Over a limit, Circle answers the signing or transfer request itself with 400, code 136001, "spend limit exceeded".

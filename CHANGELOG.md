@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `bridge.quote()`, `bridge.send()` and `bridge.status()`: USDC to the other chain of the pair with CCTP v2 and Circle's Forwarding Service, as the CLI does for an agent wallet. Tested against the stand-in only; it has never moved money.
+
 ## 0.2.1 (24 Nov 2026)
 
 Added, from the CLI's source. The first two lines ran against Circle on Arc testnet on 24 Nov 2026, the message signature checked on-chain through ERC-1271; the rest is tested against the stand-in only:

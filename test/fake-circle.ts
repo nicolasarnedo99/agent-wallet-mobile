@@ -64,7 +64,7 @@ export function fakeCircle(network: Network = 'arc', options: { operation?: 'log
   const proxy = NETWORKS[network].proxy;
   const wallet = WALLETS[network];
   const calls: string[] = [];
-  const seen: { clientKey?: string; deviceId?: string; typedData?: any; approve?: any; execution?: any; polls?: number; deactivate?: any; transfer?: any; fund?: any; initialize?: any; policy?: any; message?: any; change?: string } = {};
+  const seen: { clientKey?: string; deviceId?: string; typedData?: any; approve?: any; execution?: any; polls?: number; deactivate?: any; transfer?: any; fund?: any; initialize?: any; policy?: any; message?: any; change?: string; executions: any[] } = { executions: [] };
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
   const fetch = async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = new URL(String(input));
@@ -179,7 +179,7 @@ export function fakeCircle(network: Network = 'arc', options: { operation?: 'log
         expect(JSON.parse(body).idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
         return json(200, { data: { challengeId: 'tx-1' } });
       case 'POST /v1/w3s/user/transactions/contractExecution':
-        asUser(); seen.execution = JSON.parse(body);
+        asUser(); seen.execution = JSON.parse(body); seen.executions.push(seen.execution);
         if (options.offList) return json(400, { code: 136005, message: 'Contract address is not on the allowlist.' });
         return json(200, { data: { challengeId: 'tx-1' } });
       case 'POST /v1/w3s/user/transactions/transfer':

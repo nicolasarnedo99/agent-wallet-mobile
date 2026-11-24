@@ -42,6 +42,11 @@ await agent.transfer({ to: recipient, amount: '0.01' });    // USDC, or another 
 await agent.transactions();           // the wallet's latest transactions at Circle
 await agent.fund();                   // Circle's testnet faucet
 
+// Move USDC to this account's wallet on the other chain of the pair: Arc testnet to Base Sepolia, Base to Arc mainnet.
+await agent.bridge.quote('5');        // { to, amount, fee, total }
+const burn = await agent.bridge.send({ amount: '5' });
+await agent.bridge.status(burn.hash); // { status, arrivalHash }: arrived once arrivalHash is set
+
 // Paid services in Circle's Agent Marketplace. Public: it needs no login.
 const services = await searchServices({ query: 'restaurants' });
 
@@ -131,7 +136,9 @@ Testnet and mainnet are separate Circle accounts with separate logins and wallet
 
 **A new wallet cannot sign until it is deployed.** An account's first login creates its wallets, and this client does that itself on both networks. The new wallet is a smart contract account that is not on-chain yet, and Circle answers "Cannot generate a signature from an undeployed wallet" until it has sent one transaction. `deploy()` sends one that moves nothing, a zero USDC approve to the wallet itself, with the gas sponsored even for a wallet holding nothing.
 
-**Not built.** Gateway (Circle's prepaid balance for batched sellers), fee estimates, raw transactions, passkeys, the login path for accounts from before Circle's current flow, and the CLI's swap, bridge, earn and borrow commands.
+**The bridge has never moved money.** `bridge.send()` was written from the CLI's source and Circle's bridge kit: an approval, then a burn through Circle's bridge contract with its forwarder asked to mint on the other chain. Its arguments are checked against the stand-in, not yet against the chain, and a burn cannot be undone. Prove it on testnet (`npm run smoke -- --bridge --no-pay`) before sending real USDC through it. It covers two routes only, Arc testnet to Base Sepolia and Base to Arc mainnet, and this client reads balances on the first chain of each pair, not the second.
+
+**Not built.** Gateway (Circle's prepaid balance for batched sellers), fee estimates, raw transactions, passkeys, the login path for accounts from before Circle's current flow, and the CLI's swap, earn and borrow commands. Earn is not possible yet: the CLI itself refuses it for agent wallets ("not yet supported for agent wallets").
 
 **Only an iPhone has run this code.** Android goes through the same `react-native-keychain` call and should work, but nobody has tried. The approval request still carries the device description the CLI sends (`WebSDK`, `Desktop`), because that is the only value known to pass.
 
@@ -156,6 +163,7 @@ Testnet and mainnet are separate Circle accounts with separate logins and wallet
 | `logout('local')` | Circle | Circle | No |
 | `signMessage()`, `balances()`, `wallets()`, `transactions()` | Circle | Stand-in only | No |
 | `cancel()`, `accelerate()` | Stand-in only | Stand-in only | No |
+| `bridge.quote()`, `bridge.send()`, `bridge.status()` | Stand-in only; the fee quote read from Circle | Stand-in only | No |
 | Blocklists, recipient lists, `reset(id)` | Mainnet only | Stand-in only | No |
 | `logout('all')` | Never sent | Never sent | No |
 

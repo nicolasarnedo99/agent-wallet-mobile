@@ -5,6 +5,7 @@
 //   npm run smoke -- --call  # the payment, then a zero USDC approve through call() and transaction()
 //   npm run smoke -- --fund --transfer   # also ask the faucet for USDC, and transfer 0.01 USDC to the payee
 //   npm run smoke -- --base --lists --no-pay    # an allowlist of one contract, a refused call, an allowed one; spends nothing
+//   npm run smoke -- --bridge --no-pay           # bridge 0.10 test USDC from Arc testnet to Base Sepolia and wait for it to arrive
 //   npm run smoke -- --extras --no-pay           # sign a message and check it on-chain, list tokens, wallets and transactions; spends nothing
 //   npm run smoke -- --base --deploy --no-pay   # a first mainnet login with a never-used email: creates and deploys the wallet, spends nothing
 //   npm run smoke -- --fund --deploy     # for a brand-new wallet: faucet first, then the transaction that deploys it, then the payment
@@ -49,6 +50,7 @@ export async function onChain(hash, eventName, matches) {
 async function main() {
   if (!RESOURCE || !/^0x[0-9a-fA-F]{40}$/.test(PAYEE ?? '')) throw new Error('Set the seller URL and its payee in .env.local (see the top of this file)');
   if (BASE && process.argv.includes('--fund')) throw new Error('There is no faucet on mainnet');
+  if (BASE && process.argv.includes('--bridge')) throw new Error('The bridge run is testnet only until it has worked there once');
   if (!BASE && (process.argv.includes('--limits') || process.argv.includes('--lists'))) throw new Error('Limits exist on mainnet only: add --base');
   if (BASE) console.log(process.argv.includes('--no-pay') ? 'BASE MAINNET: no payment in this run.' : 'BASE MAINNET: this run spends 0.01 real USDC.');
   const withCall = process.argv.includes('--call');
@@ -140,6 +142,26 @@ async function main() {
         result.limits.after = await agent.limits.read();
         console.log(`limits   after reset: ${JSON.stringify(result.limits.after)}`);
         if (custom(result.limits.after).length) console.error(`A CUSTOM LIMIT IS STILL SET. Run: circle wallet limit reset --address ${wallet.address} --chain BASE`);
+      }
+    }
+    if (process.argv.includes('--bridge')) {
+      // 0.10 test USDC from Arc testnet to the same address on Base Sepolia: burned here, minted there by Circle's forwarder.
+      const quote = await agent.bridge.quote('0.10');
+      console.log(`bridge   quote: ${JSON.stringify(quote)}`);
+      const burned = await agent.bridge.send({ amount: '0.10' });
+      const burnBlock = await onChain(burned.hash, 'Transfer', args => same(args.from, wallet.address) && args.value === BigInt(Math.round(Number(quote.total) * 1e6)));
+      result.bridge = { quote, burn: burned.hash, block: burnBlock };
+      console.log(`bridge   burned: ${burned.hash} (block ${burnBlock}, ${quote.total} USDC left the wallet)`);
+      let arrived = { status: 'pending', arrivalHash: null };
+      for (let i = 0; i < 60 && !arrived.arrivalHash; i++) { await new Promise(done => setTimeout(done, 5000)); arrived = await agent.bridge.status(burned.hash).catch(() => arrived); }
+      result.bridge.status = arrived;
+      if (!arrived.arrivalHash) console.log(`bridge   NOT ARRIVED after five minutes (status ${arrived.status}); keep the burn hash and ask again later`);
+      else {
+        const there = createPublicClient({ transport: http('https://sepolia.base.org') });
+        const receipt = await there.waitForTransactionReceipt({ hash: arrived.arrivalHash, timeout: 60_000 });
+        const minted = parseEventLogs({ abi: erc20Abi, eventName: 'Transfer', logs: receipt.logs }).filter(log => same(log.args.to, wallet.address));
+        result.bridge.arrival = { hash: arrived.arrivalHash, status: receipt.status, received: minted.map(log => `${Number(log.args.value) / 1e6} of ${log.address}`) };
+        console.log(`bridge   arrived on Base Sepolia: ${arrived.arrivalHash} (${receipt.status}), received ${JSON.stringify(result.bridge.arrival.received)}`);
       }
     }
     if (process.argv.includes('--extras')) {
