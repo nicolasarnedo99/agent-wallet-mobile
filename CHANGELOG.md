@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.2.2 (24 Nov 2026)
 
 - `bridge.balance()`: the USDC the account holds on the bridge's other chain.
 - `not_allowed` now also covers Circle's blocklist refusal, which reads "Contract address is blocked by policy." and came back as `http` before.
+- Run against Circle on Base mainnet for the first time: `signMessage()`, `balances()`, `wallets()`, `transactions()`, the contract blocklist, both recipient lists and `limits.reset(id)`. A recipient allowlist was seen to stop a signed x402 payment, which Circle reports as a bare 502.
 
 ## 0.2.1 (24 Nov 2026)
 
