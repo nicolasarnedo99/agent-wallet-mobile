@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- `bridge.balance()`: the USDC the account holds on the bridge's other chain. Tested against the stand-in only.
+- `bridge.balance()`: the USDC the account holds on the bridge's other chain.
+- `not_allowed` now also covers Circle's blocklist refusal, which reads "Contract address is blocked by policy." and came back as `http` before.
 
 ## 0.2.1 (24 Nov 2026)
 

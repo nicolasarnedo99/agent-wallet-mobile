@@ -342,6 +342,13 @@ describe('call', () => {
     expect(error.message).toContain('not on the allowlist');
     expect(circle.calls).toEqual(['POST /v1/w3s/user/transactions/contractExecution']);
   });
+  // Seen on Base mainnet on 24 Nov 2026, with that contract on the owner's blocklist.
+  it("names Circle's refusal when the contract is on the owner's blocklist", async () => {
+    const { wallet } = await loggedIn('arc', { blocked: true });
+    const error = await wallet.call({ to: SELLER, data: '0xabcdef' }).catch(e => e);
+    expect(code(error)).toBe('not_allowed');
+    expect(error.message).toContain('blocked by policy');
+  });
   it("throws Circle's reason when the transaction fails, with its id, so nothing reads as done", async () => {
     const { wallet } = await loggedIn('arc', { transaction: { state: 'FAILED', errorReason: 'EXECUTION_REVERTED', txHash: MINED } });
     const failure = await wallet.call({ to: SELLER, data: '0xabcdef' }).catch(e => e);

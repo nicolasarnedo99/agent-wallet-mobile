@@ -110,7 +110,8 @@ What Circle enforces, as seen from this client on Base mainnet on 24 Nov 2026:
 |---|---|---|---|
 | Amount cap per payment, day, week and month | `limits.set()` | Stablecoin transfers and signed x402 payments | Yes: a 0.01 USDC payment and a 0.01 USDC transfer under a 0.005 cap, 400 with code 136001, "spend limit exceeded" |
 | Contract allowlist | `limits.setList('contract-allowlist', …)` | Contract calls | Yes: a call to a contract off the list, 400 with code 136005, "Contract address is not on the allowlist."; a call to the listed contract went through ([`0xc1b9d1a8…083f`](https://basescan.org/tx/0xc1b9d1a8ca742038acef1e9ecb9460543919b16f9685ed75db5b5f658618083f)) |
-| Contract blocklist, recipient allowlist and blocklist | `limits.setList(…)` | Contract calls; stablecoin transfers | Not run against Circle: the same request with another rule name |
+| Contract blocklist | `limits.setList('contract-blocklist', …)` | Contract calls | Yes: a call to the listed contract, 400 with code 136006, "Contract address is blocked by policy." |
+| Recipient allowlist and blocklist | `limits.setList('recipient-allowlist', …)` | Stablecoin transfers | Set and read back; a transfer to the one allowed recipient went through ([`0x1aaa9005…0a64`](https://basescan.org/tx/0x1aaa9005f652a4f2aa160270d7ade4cbc073f12ade11651a7999106d07cc0a64)). Not seen refusing: see below |
 
 In each refusal no challenge was opened and the balance did not move. With no custom rule Circle applies 100 USDC a month.
 
@@ -118,6 +119,7 @@ Three things to know before building on this:
 
 - **Circle's amount caps do not cover contract calls.** The CLI offers that cap (`--policy-type contract` with a transfer limit), but Circle answered the request with a bare 400, so this client does not send it. For a contract call Circle restricts which contract, never how much: a cap on what a call may spend has to be the app's own check, made before `call()`.
 - **The rules exist on mainnet only.** On testnet these calls throw `invalid_input` without asking Circle.
+- **Whether a recipient list stops a signed x402 payment is not settled.** With an allowlist holding only the wallet itself, Circle answered the request to sign a payment to another address with a bare 502, not a refusal. Nothing was signed and the balance did not move, but a 502 is a server error, and one run cannot tell a broken check from a passing fault. Until Circle refuses one cleanly, keep the payee check in your app.
 - **A rule is not replaced in place.** A second rule of the same kind is refused; call `limits.reset()` or `limits.reset(id)` first.
 
 ## Networks
@@ -137,7 +139,7 @@ Testnet and mainnet are separate Circle accounts with separate logins and wallet
 
 **A new wallet cannot sign until it is deployed.** An account's first login creates its wallets, and this client does that itself on both networks. The new wallet is a smart contract account that is not on-chain yet, and Circle answers "Cannot generate a signature from an undeployed wallet" until it has sent one transaction. `deploy()` sends one that moves nothing, a zero USDC approve to the wallet itself, with the gas sponsored even for a wallet holding nothing.
 
-**The bridge has moved test USDC only.** `bridge.send()` was written from the CLI's source and Circle's bridge kit: an approval, then a burn through Circle's bridge contract with its forwarder asked to mint on the other chain. On 24 Nov 2026 it took 0.10 USDC from Arc testnet to Base Sepolia (see [On-chain](#on-chain)). The mainnet route, Base to Arc, is the same code with other addresses and has not been run; a burn cannot be undone, so send a small amount first. It covers those two routes only. `bridge.balance()` reads the USDC the account holds on the second chain of the pair, as Circle reports it; it is tested against the stand-in only.
+**The bridge has moved test USDC only.** `bridge.send()` was written from the CLI's source and Circle's bridge kit: an approval, then a burn through Circle's bridge contract with its forwarder asked to mint on the other chain. On 24 Nov 2026 it took 0.10 USDC from Arc testnet to Base Sepolia (see [On-chain](#on-chain)). The mainnet route, Base to Arc, is the same code with other addresses and has not been run; a burn cannot be undone, so send a small amount first. It covers those two routes only. `bridge.balance()` reads the USDC the account holds on the second chain of the pair, as Circle reports it; it has run on mainnet, where it read an empty Arc wallet.
 
 **Not built.** Gateway (Circle's prepaid balance for batched sellers), fee estimates, raw transactions, passkeys, the login path for accounts from before Circle's current flow, and the CLI's swap, earn and borrow commands. Earn is not possible yet: the CLI itself refuses it for agent wallets ("not yet supported for agent wallets").
 
@@ -162,10 +164,11 @@ Testnet and mainnet are separate Circle accounts with separate logins and wallet
 | `limits.read()`, `budget()`, owner login, `set()`, `reset()` | Mainnet only | Circle | No |
 | Contract allowlist and its refusal | Mainnet only | Circle | No |
 | `logout('local')` | Circle | Circle | No |
-| `signMessage()`, `balances()`, `wallets()`, `transactions()` | Circle | Stand-in only | No |
+| `signMessage()`, `balances()`, `wallets()`, `transactions()` | Circle | Circle | No |
 | `cancel()`, `accelerate()` | Stand-in only | Stand-in only | No |
 | `bridge.quote()`, `bridge.send()`, `bridge.status()` | Circle, to Base Sepolia | Stand-in only | No |
-| Blocklists, recipient lists, `reset(id)` | Mainnet only | Stand-in only | No |
+| Blocklists, recipient lists, `reset(id)` | Mainnet only | Circle; a recipient list not seen refusing | No |
+| `bridge.balance()` | Stand-in only | Circle | No |
 | `logout('all')` | Never sent | Never sent | No |
 
 The rows marked "stand-in only" were written from the CLI's source and have never met Circle. The message signature was checked on-chain on 24 Nov 2026: the wallet itself, asked through ERC-1271 `isValidSignature`, accepted the 65-byte signature Circle returned. That run also listed the account's wallets, one address on nine testnet chains.

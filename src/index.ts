@@ -344,9 +344,10 @@ const status = (id: string, transaction: any): TransactionStatus => ({ id, state
 
 // Circle refuses over-limit spending when the signature or the transaction is asked for, before any challenge exists: seen on
 // Base mainnet as a 400 "spend limit exceeded" (for signing; assumed the same for transactions).
-// An address the owner's lists rule out is refused the same way: seen as a 400 "Contract address is not on the allowlist."
+// An address the owner's lists rule out is refused the same way: seen as a 400 "Contract address is not on the allowlist." (code
+// 136005) and "Contract address is blocked by policy." (code 136006).
 const limited = <T>(asked: Promise<T>): Promise<T> => asked.catch(error => {
-  const refusal = !(error instanceof AgentWalletError) || error.status !== 400 ? null : /spend limit/i.test(error.message) ? 'limit_exceeded' : /allowlist|blocklist/i.test(error.message) ? 'not_allowed' : null;
+  const refusal = !(error instanceof AgentWalletError) || error.status !== 400 ? null : /spend limit/i.test(error.message) ? 'limit_exceeded' : /allowlist|blocklist|blocked by policy/i.test(error.message) ? 'not_allowed' : null;
   throw refusal ? new AgentWalletError(refusal, error.message, 400) : error;
 });
 
