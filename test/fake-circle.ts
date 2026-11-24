@@ -64,7 +64,7 @@ export function fakeCircle(network: Network = 'arc', options: { operation?: 'log
   const proxy = NETWORKS[network].proxy;
   const wallet = WALLETS[network];
   const calls: string[] = [];
-  const seen: { clientKey?: string; deviceId?: string; typedData?: any; approve?: any; execution?: any; polls?: number; deactivate?: any; transfer?: any; fund?: any; initialize?: any; policy?: any } = {};
+  const seen: { clientKey?: string; deviceId?: string; typedData?: any; approve?: any; execution?: any; polls?: number; deactivate?: any; transfer?: any; fund?: any; initialize?: any; policy?: any; message?: any; change?: string } = {};
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
   const fetch = async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = new URL(String(input));
@@ -162,6 +162,15 @@ export function fakeCircle(network: Network = 'arc', options: { operation?: 'log
         if (options.overLimit) return json(400, { message: 'spend limit exceeded' });
         return json(200, { data: { challengeId: 'sig-1' } });
       }
+      case 'POST /v1/w3s/user/sign/message':
+        asUser(); seen.message = JSON.parse(body);
+        expect(seen.message.walletId).toBe(wallet.id);
+        return json(200, { data: { challengeId: 'sig-1' } });
+      case 'POST /v1/w3s/user/transactions/t-9/cancel':
+      case 'POST /v1/w3s/user/transactions/t-9/accelerate':
+        asUser(); seen.change = path.split('/').pop()!;
+        expect(JSON.parse(body).idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
+        return json(200, { data: { challengeId: 'tx-1' } });
       case 'POST /v1/w3s/user/transactions/contractExecution':
         asUser(); seen.execution = JSON.parse(body);
         if (options.offList) return json(400, { code: 136005, message: 'Contract address is not on the allowlist.' });

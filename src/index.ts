@@ -395,7 +395,30 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
     if (!hash) throw broken(`Circle confirmed transaction ${id} but sent no hash`);
     return { hash, transactionId: id };
   }
-  const unsupported = async (): Promise<never> => { throw new AgentWalletError('invalid_input', 'This account only signs EIP-712 typed data; send transactions with call()'); };
+  // A plain message (EIP-191), as text or as raw bytes. Like every signature from this wallet it verifies through ERC-1271.
+  async function signMessage(message: string | { raw: Hex | Uint8Array }): Promise<Hex> {
+    const s = await live();
+    const raw = typeof message === 'string' ? null : typeof message.raw === 'string' ? message.raw : `0x${hex(message.raw).toLowerCase()}`;
+    if (raw !== null && !/^0x([0-9a-fA-F]{2})*$/.test(raw)) throw new AgentWalletError('invalid_input', 'Raw message bytes are 0x-prefixed hex');
+    const { challengeId } = await limited(plain(f, s, 'POST', '/v1/w3s/user/sign/message', s.userToken,
+      raw === null ? { walletId: s.walletId, message } : { walletId: s.walletId, message: raw, encodedByHex: true }));
+    if (typeof challengeId !== 'string') throw broken('Circle sent no signing challenge');
+    const signature = (await approve(f, s, challengeId))?.data?.signature;
+    if (typeof signature !== 'string' || !/^0x[0-9a-fA-F]+$/.test(signature)) throw broken('Circle approved but sent no signature');
+    return signature as Hex;
+  }
+  // Cancelling or speeding up a transaction is itself a challenge, approved like a signature.
+  async function change(id: string, how: 'cancel' | 'accelerate'): Promise<TransactionStatus> {
+    const s = await live();
+    const { challengeId } = await plain(f, s, 'POST', `/v1/w3s/user/transactions/${encodeURIComponent(id)}/${how}`, s.userToken, { idempotencyKey: uuid() });
+    if (typeof challengeId !== 'string') throw broken('Circle sent no challenge');
+    await approve(f, s, challengeId);
+    const { challenge } = await poll(() => plain(f, s, 'GET', `/v1/w3s/user/challenges/${challengeId}`, s.userToken),
+      (answer: any) => ['COMPLETE', 'FAILED', 'EXPIRED'].includes(answer?.challenge?.status), `approval ${challengeId}`);
+    if (challenge.status !== 'COMPLETE') throw new AgentWalletError('transaction_failed', `Circle's approval ended ${challenge.status}`);
+    return status(id, (await plain(f, s, 'GET', `/v1/w3s/transactions/${encodeURIComponent(id)}`, s.userToken)).transaction);
+  }
+  const unsupported = async (): Promise<never> => { throw new AgentWalletError('invalid_input', 'This account signs messages and typed data; send transactions with call()'); };
 
   return {
     network,
@@ -421,6 +444,13 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
     session,
     // From the session, no network call. The address is the same until the next login.
     async wallet(): Promise<WalletInfo> { return info(await live()); },
+    // Every token Circle reports for the wallet, amounts as decimal strings in whole tokens.
+    async balances(): Promise<{ symbol: string; address: string; amount: string }[]> {
+      const s = await live();
+      const { tokenBalances } = await plain(f, s, 'GET', `/v1/w3s/wallets/${s.walletId}/balances`, s.userToken);
+      if (!Array.isArray(tokenBalances)) return [];
+      return tokenBalances.map((b: any) => ({ symbol: String(b?.token?.symbol), address: String(b?.token?.tokenAddress ?? '').toLowerCase(), amount: String(b?.amount) }));
+    },
     // USDC on this network as Circle reports it, a decimal string ("19.99"); "0" when the wallet has none.
     async balance(): Promise<string> {
       const s = await live();
@@ -429,10 +459,11 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
       return typeof usdc?.amount === 'string' ? usdc.amount : '0';
     },
     signTypedData,
+    signMessage,
     // A viem account (type 'local') for anything that takes one. signMessage and signTransaction throw.
     async account(): Promise<LocalAccount> {
       const { address } = await live();
-      return toAccount({ address, signMessage: unsupported, signTransaction: unsupported, signTypedData: data => signTypedData(data as unknown as TypedData) });
+      return toAccount({ address, signMessage: ({ message }) => signMessage(message as string | { raw: Hex | Uint8Array }), signTransaction: unsupported, signTypedData: data => signTypedData(data as unknown as TypedData) });
     },
     // For @x402/evm: registerExactEvmScheme(client, { signer: await wallet.x402Signer() }). Run your own checks on the 402 first.
     async x402Signer(): Promise<X402Signer> { return { address: (await live()).address, signTypedData }; },
@@ -467,6 +498,9 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
       if (network !== 'arc') throw new AgentWalletError('invalid_input', 'Circle has a faucet on testnet only');
       await plain(f, s, 'POST', '/fund', s.userToken, { address: s.address, blockchain: NETWORKS[network].blockchain, token });
     },
+    // For a transaction Circle has not finished: stop it, or resend it with a higher fee. Each answers where it then stands.
+    cancel: (id: string) => change(id, 'cancel'),
+    accelerate: (id: string) => change(id, 'accelerate'),
     // Where a transaction stands at Circle, for one that call() gave up waiting on (its id is in that error's message).
     async transaction(id: string): Promise<TransactionStatus> {
       const s = await live();

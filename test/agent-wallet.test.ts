@@ -132,6 +132,11 @@ describe('networks', () => {
     expect(signature).toBe(SIGNATURE);
     expect(circle.seen.typedData.domain.chainId).toBe(8453);
   });
+  it('lists every token the wallet holds, not only USDC', async () => {
+    const { wallet } = await loggedIn();
+    expect(await wallet.balances()).toEqual([{ symbol: 'EURC', address: '0xbef5f6d51cb62b58e6a8f77868681825c6fe21c1', amount: '1.5' },
+      { symbol: 'USDC', address: BASE_USDC.toLowerCase(), amount: '0.99' }, { symbol: 'USDC', address: ARC_USDC, amount: '19.99' }]);
+  });
   it("reads the wallet's USDC on Arc testnet, picked by token address", async () => {
     expect(await (await loggedIn()).wallet.balance()).toBe('19.99');
   });
@@ -193,11 +198,21 @@ describe('signing', () => {
     expect(error.message).toContain('spend limit exceeded');
     expect(circle.calls).toEqual(['POST /v1/w3s/user/sign/typedData']);
   });
-  it('says so rather than signing a message or a raw transaction, which this client does not do', async () => {
+  it('has Circle sign a plain message, as text or as raw bytes, through the viem account too', async () => {
     const { wallet, circle } = await loggedIn();
+    expect(await wallet.signMessage('hello')).toBe(SIGNATURE);
+    expect(circle.seen.message).toEqual({ walletId: 'w-arc', message: 'hello' });
+    expect(circle.calls).toEqual(['POST /v1/w3s/user/sign/message', 'GET /v1/w3s/sdk/user/challenges/sig-1', 'POST /v1/w3s/sdk/user/challenges/sig-1/approve']);
     const account = await wallet.account();
-    await expect(account.signMessage({ message: 'hi' })).rejects.toThrow('only signs EIP-712 typed data');
-    await expect(account.signTransaction({ to: WALLETS.arc.address })).rejects.toThrow('only signs EIP-712 typed data');
+    expect(await account.signMessage({ message: { raw: '0xdeadbeef' } })).toBe(SIGNATURE);
+    expect(circle.seen.message).toEqual({ walletId: 'w-arc', message: '0xdeadbeef', encodedByHex: true });
+    expect(await account.signMessage({ message: { raw: new Uint8Array([1, 2, 255]) } })).toBe(SIGNATURE);
+    expect(circle.seen.message.message).toBe('0x0102ff');
+  });
+  it('refuses raw bytes that are not hex, and says so rather than signing a raw transaction, which this client does not do', async () => {
+    const { wallet, circle } = await loggedIn();
+    expect(code(await wallet.signMessage({ raw: '0xnothex' as `0x${string}` }).catch(e => e))).toBe('invalid_input');
+    await expect((await wallet.account()).signTransaction({ to: WALLETS.arc.address })).rejects.toThrow('send transactions with call()');
     expect(circle.calls).toEqual([]);
   });
 });
@@ -231,6 +246,15 @@ describe('call', () => {
     const failure = await wallet.call({ to: SELLER, data: '0xabcdef' }).catch(e => e);
     expect(code(failure)).toBe('transaction_failed');
     expect(failure.message).toBe('Circle transaction t-9 FAILED: EXECUTION_REVERTED');
+  });
+});
+
+describe('cancel and accelerate', () => {
+  it.each(['cancel', 'accelerate'] as const)('asks Circle to %s a transaction, approves that like any other, and reports where the transaction then stands', async change => {
+    const { wallet, circle } = await loggedIn('arc', { transaction: { state: change === 'cancel' ? 'CANCELLED' : 'SENT', txHash: MINED } });
+    expect(await wallet[change]('t-9')).toEqual({ id: 't-9', state: change === 'cancel' ? 'CANCELLED' : 'SENT', hash: MINED, errorReason: null });
+    expect(circle.seen.change).toBe(change);
+    expect(circle.seen.approve.pinType).toBe('AUTO');
   });
 });
 
