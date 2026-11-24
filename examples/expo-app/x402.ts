@@ -21,7 +21,8 @@ export function checkRequirement(requirement: Requirement, terms: Terms): void {
   const amount = BigInt(requirement.amount);
   if (amount <= 0n || amount > terms.maxAmount) throw new Error('Refused to pay: amount');
   if (requirement.payTo.toLowerCase() !== terms.payTo.toLowerCase()) throw new Error('Refused to pay: payTo');
-  if ((requirement.maxTimeoutSeconds ?? 0) > (terms.maxTimeoutSeconds ?? 3600)) throw new Error('Refused to pay: timeout');
+  const timeout = requirement.maxTimeoutSeconds;
+  if (timeout !== undefined && !(Number.isFinite(timeout) && timeout <= (terms.maxTimeoutSeconds ?? 3600))) throw new Error('Refused to pay: timeout');
 }
 
 export async function payOnce(url: string, signer: X402Signer, terms: Terms, doFetch: typeof fetch = fetch): Promise<{ body: unknown; transaction: string | null }> {
@@ -48,11 +49,16 @@ export async function payOnce(url: string, signer: X402Signer, terms: Terms, doF
       // (Circle's spending limit, an expired session) pass through with their code.
       throw refusal ?? ((error as Error).name === 'AgentWalletError' ? error : new Error(`Refused to pay: ${(error as Error).message}`));
     }
-    response = await doFetch(url, { headers: http.encodePaymentSignatureHeader(payload) });
-    signed = true;
+    signed = true; // from here the seller may hold the signature, whether or not its answer arrives
+    try { response = await doFetch(url, { headers: http.encodePaymentSignatureHeader(payload) }); } catch (error) {
+      throw new Error(`A payment was signed and may still be settled, but the request failed: ${(error as Error).message}`);
+    }
   }
   let transaction: string | null = null;
-  try { transaction = http.getPaymentSettleResponse(name => response.headers.get(name)).transaction || null; } catch { /* no settlement header */ }
+  try {
+    const settled = http.getPaymentSettleResponse(name => response.headers.get(name));
+    transaction = settled.success === false ? null : settled.transaction || null;
+  } catch { /* no settlement header */ }
   // Once the seller holds a signed payment it can settle it whatever it answers, so a failure from here on says so.
   const paid = signed ? `A payment was signed${transaction ? ` and settled (${transaction})` : ' and may still be settled'}, but ` : '';
   if (response.status !== 200) throw new Error(`${paid}${paid ? 't' : 'T'}he seller answered ${response.status}`);

@@ -306,12 +306,13 @@ async function approve(f: Fetch, session: Session, challengeId: string): Promise
 // of time is `outcome_unknown`, never a failure: whatever was asked for may still happen.
 const refused = (error: unknown) => error instanceof AgentWalletError && error.status !== undefined && error.status >= 400 && error.status < 500;
 const unknown = (what: string) => new AgentWalletError('outcome_unknown', `Circle has not said how ${what} ended: look it up before sending anything again`);
-async function poll<T>(ask: () => Promise<T>, done: (answer: T) => boolean, what: string): Promise<T> {
+// After an approval even a 4xx ends nothing (`sent`): the transaction is on its way whatever one status check answers.
+async function poll<T>(ask: () => Promise<T>, done: (answer: T) => boolean, what: string, sent = false): Promise<T> {
   for (let i = 0; i < 60; i++) {
     try {
       const answer = await ask();
       if (done(answer)) return answer;
-    } catch (error) { if (refused(error)) throw error; }
+    } catch (error) { if (!sent && refused(error)) throw error; }
     await sleep(1000);
   }
   throw unknown(what);
@@ -363,7 +364,8 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
   let attempt = 0;
   let finishing: Promise<WalletInfo> | null = null;
   const replaced = () => new AgentWalletError('invalid_input', 'This login was replaced or cancelled: start again');
-  const drop = () => { attempt++; pending = null; ownerPending = null; owner = null; };
+  let ownerAttempt = 0;
+  const drop = () => { attempt++; ownerAttempt++; finishing = null; pending = null; ownerPending = null; owner = null; };
 
   // The stored session, expired or not; null when there is none for this network.
   async function session(): Promise<Session | null> {
@@ -395,19 +397,27 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
     return signature as Hex;
   }
   // A transaction Circle has opened a challenge for: approve it, then wait for the approval and for the transaction itself.
+  // Approves a challenge that sends or changes a transaction, and waits for Circle to finish with it. From the approval on,
+  // Circle may act whatever this client sees, so nothing here reads as a failure unless Circle says the challenge failed:
+  // an approval lost on the way is `outcome_unknown`, and one Circle says it already has (a retry) just carries on.
+  async function approved(s: Session, challengeId: string, namesTransaction: boolean): Promise<any> {
+    const look = () => plain(f, s, 'GET', `/v1/w3s/user/challenges/${challengeId}`, s.userToken);
+    await approve(f, s, challengeId).catch(async error => {
+      if (!refused(error)) throw unknown(`approval ${challengeId}`);
+      const seen = await look().catch(() => null);
+      if (seen?.challenge?.status !== 'COMPLETE') throw error;
+    });
+    // A completed approval names its transaction a moment later, so COMPLETE without one is not the end yet.
+    const { challenge } = await poll(look, (answer: any) => ['FAILED', 'EXPIRED'].includes(answer?.challenge?.status)
+      || (answer?.challenge?.status === 'COMPLETE' && (!namesTransaction || typeof answer.challenge.correlationIds?.[0] === 'string')), `approval ${challengeId}`, true);
+    if (challenge.status !== 'COMPLETE') throw new AgentWalletError('transaction_failed', `Circle's approval ended ${challenge.status}`);
+    return challenge;
+  }
   async function settle(s: Session, challengeId: unknown): Promise<{ hash: Hex; transactionId: string }> {
     if (typeof challengeId !== 'string') throw broken('Circle sent no transaction challenge');
-    // From here Circle may send the transaction whatever this client sees. An approval that fails on the way (not a 4xx) may
-    // still have arrived, so it is reported as unknown, with the challenge to look up, and never as a failure.
-    await approve(f, s, challengeId).catch(error => { throw refused(error) ? error : unknown(`approval ${challengeId}`); });
-    // A completed approval names its transaction a moment later, so COMPLETE without one is not the end yet.
-    const { challenge } = await poll(() => plain(f, s, 'GET', `/v1/w3s/user/challenges/${challengeId}`, s.userToken),
-      (answer: any) => ['FAILED', 'EXPIRED'].includes(answer?.challenge?.status) || (answer?.challenge?.status === 'COMPLETE' && typeof answer.challenge.correlationIds?.[0] === 'string'),
-      `approval ${challengeId}`);
-    const id = challenge.correlationIds?.[0];
-    if (challenge.status !== 'COMPLETE') throw new AgentWalletError('transaction_failed', `Circle's approval ended ${challenge.status}`);
+    const id = (await approved(s, challengeId, true)).correlationIds[0];
     const { transaction } = await poll(() => plain(f, s, 'GET', `/v1/w3s/transactions/${id}`, s.userToken),
-      (answer: any) => ['CONFIRMED', 'COMPLETE', 'FAILED', 'CANCELLED', 'DENIED'].includes(answer?.transaction?.state), `transaction ${id}`);
+      (answer: any) => ['CONFIRMED', 'COMPLETE', 'FAILED', 'CANCELLED', 'DENIED'].includes(answer?.transaction?.state), `transaction ${id}`, true);
     const { state, hash, errorReason } = status(id, transaction);
     if (state !== 'CONFIRMED' && state !== 'COMPLETE') throw new AgentWalletError('transaction_failed', `Circle transaction ${id} ${state}${errorReason ? `: ${errorReason}` : ''}`);
     if (!hash) throw broken(`Circle confirmed transaction ${id} but sent no hash`);
@@ -444,11 +454,9 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
     const s = await live();
     const { challengeId } = await plain(f, s, 'POST', `/v1/w3s/user/transactions/${encodeURIComponent(id)}/${how}`, s.userToken, { idempotencyKey: uuid() });
     if (typeof challengeId !== 'string') throw broken('Circle sent no challenge');
-    await approve(f, s, challengeId);
-    const { challenge } = await poll(() => plain(f, s, 'GET', `/v1/w3s/user/challenges/${challengeId}`, s.userToken),
-      (answer: any) => ['COMPLETE', 'FAILED', 'EXPIRED'].includes(answer?.challenge?.status), `approval ${challengeId}`);
-    if (challenge.status !== 'COMPLETE') throw new AgentWalletError('transaction_failed', `Circle's approval ended ${challenge.status}`);
-    return status(id, (await plain(f, s, 'GET', `/v1/w3s/transactions/${encodeURIComponent(id)}`, s.userToken)).transaction);
+    await approved(s, challengeId, false);
+    const { transaction } = await poll(() => plain(f, s, 'GET', `/v1/w3s/transactions/${encodeURIComponent(id)}`, s.userToken), () => true, `transaction ${id}`, true);
+    return status(id, transaction);
   }
   const unsupported = async (): Promise<never> => { throw new AgentWalletError('invalid_input', 'This account signs messages and typed data; send transactions with call()'); };
 
@@ -460,7 +468,7 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
       // Circle emails the code. `codePrefix` is the letters before the dash in "ABC-123456", so the user may type the digits alone.
       async start(email: string): Promise<{ codePrefix: string | null }> {
         const mine = ++attempt;
-        pending = null;
+        pending = null; finishing = null;
         const made = keys ?? loginKeys(); keys = null; // a fresh key for each attempt, as the CLI does
         const started = await startLogin(f, network, email.trim(), await made);
         if (mine !== attempt) throw replaced();
@@ -470,15 +478,21 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
       // Stores the session. After a wrong code the login stays open, so finish can be called again; so can it after a failure
       // later on, which picks up from the accepted code. Two calls at once share one answer.
       finish(code: string): Promise<WalletInfo> {
-        return finishing ??= (async () => {
+        if (finishing) return finishing;
+        const running: Promise<WalletInfo> = (async () => {
           const current = pending, mine = attempt;
           if (!current) throw new AgentWalletError('invalid_input', 'No login in progress: call login.start first');
-          const s = await finishLogin(f, current, code);
+          const s = await finishLogin(f, current, code).catch(error => {
+            // The accepted code's token has gone stale: nothing left to resume, so the next finish says to start again.
+            if (current.accepted && error instanceof AgentWalletError && error.status === 401 && pending === current) pending = null;
+            throw error;
+          });
           if (mine !== attempt) throw replaced();
           await storage.set(key, JSON.stringify(s));
           pending = null;
           return info(s);
-        })().finally(() => { finishing = null; });
+        })().finally(() => { if (finishing === running) finishing = null; });
+        return finishing = running;
       },
     },
     session,
@@ -489,7 +503,7 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
       const s = await live();
       const { wallets } = await plain(f, s, 'GET', '/v1/w3s/wallets?pageSize=50', s.userToken);
       if (!Array.isArray(wallets)) throw broken('Circle sent no wallets');
-      return wallets.map((w: any) => ({ id: String(w?.id), address: String(w?.address), blockchain: String(w?.blockchain) }));
+      return wallets.filter((w: any) => typeof w?.id === 'string' && typeof w?.address === 'string').map((w: any) => ({ id: w.id, address: w.address, blockchain: String(w.blockchain) }));
     },
     // This wallet's latest transactions at Circle, newest first as Circle lists them: contract calls and transfers, not x402
     // payments, which the seller's facilitator sends.
@@ -498,14 +512,15 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
       if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new AgentWalletError('invalid_input', 'The limit is a whole number from 1 to 50');
       const { transactions } = await plain(f, s, 'GET', `/v1/w3s/transactions?walletIds=${s.walletId}&pageSize=${limit}`, s.userToken);
       if (!Array.isArray(transactions)) throw broken('Circle sent no transactions');
-      return transactions.map((t: any) => ({ ...status(String(t?.id), t), operation: typeof t?.operation === 'string' ? t.operation : null }));
+      return transactions.filter((t: any) => typeof t?.id === 'string').map((t: any) => ({ ...status(t.id, t), operation: typeof t.operation === 'string' ? t.operation : null }));
     },
     // Every token Circle reports for the wallet, amounts as decimal strings in whole tokens.
     async balances(): Promise<{ symbol: string; address: string; amount: string }[]> {
       const s = await live();
       const { tokenBalances } = await plain(f, s, 'GET', `/v1/w3s/wallets/${s.walletId}/balances`, s.userToken);
       if (!Array.isArray(tokenBalances)) return [];
-      return tokenBalances.map((b: any) => ({ symbol: String(b?.token?.symbol), address: String(b?.token?.tokenAddress ?? '').toLowerCase(), amount: String(b?.amount) }));
+      return tokenBalances.filter((b: any) => typeof b?.amount === 'string' && typeof b?.token?.symbol === 'string')
+        .map((b: any) => ({ symbol: b.token.symbol, address: String(b.token.tokenAddress ?? '').toLowerCase(), amount: b.amount }));
     },
     // USDC on this network as Circle reports it, a decimal string ("19.99"); "0" when the wallet has none.
     async balance(): Promise<string> {
@@ -592,24 +607,24 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
           // Circle emails a second code, to the same address as the agent's login.
           async start(email: string): Promise<{ codePrefix: string | null }> {
             mainnet(); await live();
-            const mine = attempt;
+            const mine = ++ownerAttempt;
             ownerPending = null; owner = null;
             const started = await startLogin(f, network, email.trim(), await loginKeys(), OWNER_PROXY);
-            if (mine !== attempt) throw replaced();
+            if (mine !== ownerAttempt) throw replaced();
             ownerPending = started;
             return { codePrefix: started.otpHead ?? null };
           },
           async finish(code: string): Promise<void> {
-            const current = ownerPending, mine = attempt;
+            const current = ownerPending, mine = ownerAttempt;
             if (!current) throw new AgentWalletError('invalid_input', 'No owner login in progress: call limits.owner.start first');
             const { userToken } = await submitCode(f, current, code);
-            if (mine !== attempt) throw replaced();
+            if (mine !== ownerAttempt) throw replaced();
             const exp = jwtPayload(userToken)?.exp; // never longer than Circle's own expiry for the token
             owner = { token: userToken, until: Math.min(Date.now() + 10 * 60_000, typeof exp === 'number' ? exp * 1000 : Infinity) };
             ownerPending = null;
           },
           // Drops the owner's token now, without waiting out the ten minutes: call it as soon as the rules are set.
-          end(): void { owner = null; ownerPending = null; },
+          end(): void { ownerAttempt++; owner = null; ownerPending = null; },
         },
         // A cap per payment, day, week and month on stablecoin transfers from this wallet on this chain, each at least the one
         // before. It does not replace a custom limit: Circle refuses, and so does this, until reset() has removed the old one.

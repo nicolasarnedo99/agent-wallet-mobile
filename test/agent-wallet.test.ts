@@ -134,6 +134,18 @@ describe('login', () => {
     expect(code(await finishing)).toBe('invalid_input');
     expect(await storage.get(KEY.arc)).toBeNull();
   }, 120_000);
+  it('lets a newer login finish while an older one is still finishing, and throws the older one away', async () => {
+    const { wallet, circle, storage, release } = meddling('arc', '/v1/w3s/wallets', 'hold');
+    await wallet.login.start(EMAIL);
+    const older = wallet.login.finish(CODE).catch(e => e);
+    delete circle.seen.deviceId; // a new login is a new device to Circle
+    await wallet.login.start(EMAIL);
+    const newer = wallet.login.finish(CODE);
+    release();
+    expect(code(await older)).toBe('invalid_input');
+    expect(await newer).toMatchObject({ address: WALLETS.arc.address });
+    expect(await storage.get(KEY.arc)).not.toBeNull();
+  }, 120_000);
   it('answers two finishes of one login with the same wallet, sending the code once', async () => {
     const { wallet, circle } = fresh();
     await wallet.login.start(EMAIL);
@@ -299,7 +311,15 @@ describe('call', () => {
     expect(code(error)).toBe('outcome_unknown');
     expect(error.message).toContain('tx-1');
   });
-  it("sends the caller's idempotency key, so a retry after an unknown outcome cannot send twice", async () => {
+  it('keeps waiting when Circle refuses one status check after the approval, since the transaction is already on its way', async () => {
+    const { wallet } = await loggedIn('arc', { busy: true });
+    await expect(wallet.call({ to: SELLER, data: '0xabcdef' })).resolves.toEqual({ hash: MINED, transactionId: 't-9' });
+  });
+  it('carries on when Circle says the challenge was approved already, as on a retry of one it took', async () => {
+    const { wallet } = await loggedIn('arc', { alreadyApproved: true });
+    await expect(wallet.call({ to: SELLER, data: '0xabcdef' })).resolves.toEqual({ hash: MINED, transactionId: 't-9' });
+  });
+  it("sends the caller's idempotency key to Circle, for calls and for transfers, and refuses one that is not a UUID", async () => {
     const { wallet, circle } = await loggedIn();
     const idempotencyKey = '0b0c1d2e-3f40-4a5b-8c6d-7e8f90a1b2c3';
     await wallet.call({ to: SELLER, data: '0xabcdef', idempotencyKey });
@@ -335,6 +355,13 @@ describe('cancel and accelerate', () => {
     expect(await wallet[change]('t-9')).toEqual({ id: 't-9', state: change === 'cancel' ? 'CANCELLED' : 'SENT', hash: MINED, errorReason: null });
     expect(circle.seen.change).toBe(change);
     expect(circle.seen.approve.pinType).toBe('AUTO');
+  });
+});
+
+describe('cancel and accelerate, when the approval may have been lost', () => {
+  it('says the outcome is unknown rather than failed', async () => {
+    const { wallet } = await loggedIn('arc', { approveLost: true });
+    expect(code(await wallet.cancel('t-9').catch(e => e))).toBe('outcome_unknown');
   });
 });
 
@@ -568,12 +595,25 @@ describe('the checks a 402 must pass before anything is signed', () => {
     ['transfer method', { extra: { name: 'USDC', version: '2', assetTransferMethod: 'permit2' } }],
     ['amount', { amount: '10001' }], ['amount', { amount: '0' }], ['amount', { amount: '0x10' }], ['amount', { amount: ' 1' }],
     ['payTo', { payTo: '0x2222222222222222222222222222222222222222' }], ['timeout', { maxTimeoutSeconds: 86_400 * 30 }],
+    ['timeout', { maxTimeoutSeconds: 'abc' as unknown as number }],
   ] as const)('refuses another %s: %j', (field, change) => {
     expect(() => checkRequirement({ ...offer, ...change }, terms)).toThrow(`Refused to pay: ${field}`);
   });
 });
 
 describe('paying an x402 resource', () => {
+  it('lets the app allow a longer validity than the default hour', () => {
+    const day = { scheme: 'exact', network: 'eip155:5042002', asset: ARC_USDC, amount: '10000', payTo: PAY_TO, maxTimeoutSeconds: 86_400, extra: { name: 'USDC', version: '2' } };
+    expect(() => checkRequirement(day, terms)).toThrow('Refused to pay: timeout');
+    expect(() => checkRequirement(day, { ...terms, maxTimeoutSeconds: 86_400 })).not.toThrow();
+  });
+  it('says a payment was signed when the paid request never comes back, or comes back unreadable', async () => {
+    const { wallet } = await loggedIn(); const s = seller();
+    const answering = (answer: () => Promise<Response>) => (async (input: string | URL | Request, init: RequestInit = {}) =>
+      (new Headers(init.headers).get('payment-signature') ? answer() : s.fetch(input, init))) as typeof fetch;
+    await expect(payOnce(s.url, await wallet.x402Signer(), terms, answering(async () => { throw new TypeError('network down'); }))).rejects.toThrow('A payment was signed');
+    await expect(payOnce(s.url, await wallet.x402Signer(), terms, answering(async () => new Response('<html>', { status: 200 })))).rejects.toThrow('A payment was signed');
+  });
   it('says a payment was signed when the seller then fails, so the app does not treat it as unpaid', async () => {
     const { wallet } = await loggedIn(); const s = seller();
     const failing = (async (input: string | URL | Request, init: RequestInit = {}) =>

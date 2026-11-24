@@ -12,12 +12,13 @@ Added, from the CLI's source and tested against the stand-in only:
 
 Fixed, after a review of the whole client:
 
-- A transaction that was sent is no longer reported as failed. A failed status check is retried, and running out of time, or an approval lost on the way, is the new error `outcome_unknown`. Before, one dropped connection during the wait threw an error that read as a failure, and a retry could send the transaction twice.
-- Overlapping logins no longer step on each other: a login replaced by a newer `start`, a `logout` or a `forget` stores nothing, and two `finish` calls share one answer.
+- A transaction that was sent is no longer reported as failed. After the approval no failed status check ends the wait, whatever its status; running out of time, or an approval lost on the way, is the new error `outcome_unknown`; and an approval Circle says it already has, as on a retry, carries on. Before, one dropped connection during the wait threw an error that read as a failure, and a retry could send the transaction twice. `cancel()` and `accelerate()` wait the same way.
+- Overlapping logins no longer step on each other: a login replaced by a newer `start`, a `logout` or a `forget` stores nothing, two `finish` calls of one login share one answer, and a newer login can finish while an older one is still in flight. The owner login follows the same rule, and `limits.owner.end()` stops one that is still finishing.
 - A login whose code was accepted and which then failed at a later step picks up from there. Before, a retry sent the spent code again and reported it as wrong.
 - `deploy()` works when taken off the wallet object.
 - `limits.reset(id)` says so when no rule has that id. `forget()` also drops a pending login and the owner's token.
-- The example's payment helper says when a payment was already signed before the seller failed, and refuses a 402 that keeps a payment valid for more than an hour (`maxTimeoutSeconds` in the terms).
+- The example's payment helper says when a payment was already signed before the seller failed, answered something unreadable or never answered, and refuses a 402 that keeps a payment valid for more than an hour (`maxTimeoutSeconds` in the terms).
+- `wallets()`, `transactions()` and `balances()` leave out a row Circle sent without the fields that identify it.
 
 `limit_exceeded` and `not_allowed` now also apply to `signMessage()`.
 
