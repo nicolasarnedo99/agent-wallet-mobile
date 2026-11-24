@@ -149,7 +149,7 @@ Circle sends a transaction once its challenge is approved, whatever the client t
 
 ## Bridge
 
-Read from the CLI's `bridge transfer` for an agent wallet (`commands/bridge/transfer.ts:774`) and from the bridge kit bundled in it. From this library it has run against the stand-in only; the fee quote was read from Circle once (Arc testnet to Base Sepolia, 24 Nov 2026: a forwarding fee of 0.05268 USDC and no protocol fee).
+Read from the CLI's `bridge transfer` for an agent wallet (`commands/bridge/transfer.ts:774`) and from the bridge kit bundled in it. From this library it ran once, on 24 Nov 2026, from Arc testnet to Base Sepolia: a forwarding fee of 0.052664 USDC, no protocol fee, and the mint by Circle's forwarder followed the burn without anything further from the wallet. The approval sent as `callData` was accepted.
 
 1. `GET {iris}/v2/burn/USDC/fees/{sourceDomain}/{destinationDomain}?forward=true`, no token. `iris` is `https://iris-api-sandbox.circle.com` on testnet and `https://iris-api.circle.com` on mainnet; the domains are CCTP's (Base 6, Arc 26). Take the row with `finalityThreshold` 1000: `forwardFee.med` is the forwarder's fee in base units and `minimumFee` the protocol fee in basis points of the amount. No `forwardFee` means the route has no forwarder.
 2. `maxFee` is the two fees added; the total burned is the amount plus `maxFee`.

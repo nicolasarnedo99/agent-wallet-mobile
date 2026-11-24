@@ -136,7 +136,7 @@ Testnet and mainnet are separate Circle accounts with separate logins and wallet
 
 **A new wallet cannot sign until it is deployed.** An account's first login creates its wallets, and this client does that itself on both networks. The new wallet is a smart contract account that is not on-chain yet, and Circle answers "Cannot generate a signature from an undeployed wallet" until it has sent one transaction. `deploy()` sends one that moves nothing, a zero USDC approve to the wallet itself, with the gas sponsored even for a wallet holding nothing.
 
-**The bridge has never moved money.** `bridge.send()` was written from the CLI's source and Circle's bridge kit: an approval, then a burn through Circle's bridge contract with its forwarder asked to mint on the other chain. Its arguments are checked against the stand-in, not yet against the chain, and a burn cannot be undone. Prove it on testnet (`npm run smoke -- --bridge --no-pay`) before sending real USDC through it. It covers two routes only, Arc testnet to Base Sepolia and Base to Arc mainnet, and this client reads balances on the first chain of each pair, not the second.
+**The bridge has moved test USDC only.** `bridge.send()` was written from the CLI's source and Circle's bridge kit: an approval, then a burn through Circle's bridge contract with its forwarder asked to mint on the other chain. On 24 Nov 2026 it took 0.10 USDC from Arc testnet to Base Sepolia (see [On-chain](#on-chain)). The mainnet route, Base to Arc, is the same code with other addresses and has not been run; a burn cannot be undone, so send a small amount first. It covers those two routes only, and this client reads balances on the first chain of each pair, not the second.
 
 **Not built.** Gateway (Circle's prepaid balance for batched sellers), fee estimates, raw transactions, passkeys, the login path for accounts from before Circle's current flow, and the CLI's swap, earn and borrow commands. Earn is not possible yet: the CLI itself refuses it for agent wallets ("not yet supported for agent wallets").
 
@@ -163,7 +163,7 @@ Testnet and mainnet are separate Circle accounts with separate logins and wallet
 | `logout('local')` | Circle | Circle | No |
 | `signMessage()`, `balances()`, `wallets()`, `transactions()` | Circle | Stand-in only | No |
 | `cancel()`, `accelerate()` | Stand-in only | Stand-in only | No |
-| `bridge.quote()`, `bridge.send()`, `bridge.status()` | Stand-in only; the fee quote read from Circle | Stand-in only | No |
+| `bridge.quote()`, `bridge.send()`, `bridge.status()` | Circle, to Base Sepolia | Stand-in only | No |
 | Blocklists, recipient lists, `reset(id)` | Mainnet only | Stand-in only | No |
 | `logout('all')` | Never sent | Never sent | No |
 
@@ -192,6 +192,11 @@ First logins through this package, with never-used email addresses and no CLI, o
 
 - Arc testnet: a new wallet, `0x5a5d4af9730fd92f4db96a1c3f5b980a9879e0f6`. The faucet's 20 USDC arrived, `deploy()` put it on-chain with the gas sponsored ([`0xd8f7a76f…fd12`](https://explorer.testnet.arc.io/tx/0xd8f7a76f6f9d24ecab4fc0868149937d15751bbd8cfae677abd208aede81fd12)), and its first x402 payment then settled ([`0xc7688296…a96f`](https://explorer.testnet.arc.io/tx/0xc768829662215b78ad480bac0b0a192c0e47fd626a82f4307e35ebe39bdfa96f?tab=token_transfers)). Before `deploy()`, Circle had refused to sign for it.
 - Base mainnet: a new wallet, `0xa7b8def3f516eceef79632f2ee6991e9d6137fd5`, deployed while it held no ETH and no USDC, so Circle sponsored that gas too ([`0xe688e30a…a028`](https://basescan.org/tx/0xe688e30a08d30f992666ca10511de3a870cbea1c2f0fd514c3b7b10f4a1fa028)).
+
+A bridge through this package on 24 Nov 2026, from Arc testnet to the same address on Base Sepolia:
+
+- The burn: 0.152664 USDC left the wallet, 0.10 to arrive and 0.052664 for Circle's forwarder, through Circle's bridge contract: [`0xfdac0df1…76fe`](https://explorer.testnet.arc.io/tx/0xfdac0df1e91da6070c69a9c404af6a718ea5fd4163e02ca724b7f58abbf876fe?tab=token_transfers)
+- The mint, sent by Circle's forwarder with no gas from the wallet: 0.10 USDC to the wallet on Base Sepolia: [`0x0f77dd04…447b`](https://sepolia.basescan.org/tx/0x0f77dd04387ce19cad428996fb7d90077f33fcc429cdcdd1ee60829f6565447b)
 
 Sent by this package from an iPhone, inside Nest, on 23 Nov 2026 (UTC):
 

@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- `bridge.quote()`, `bridge.send()` and `bridge.status()`: USDC to the other chain of the pair with CCTP v2 and Circle's Forwarding Service, as the CLI does for an agent wallet. Tested against the stand-in only; it has never moved money.
+- `bridge.quote()`, `bridge.send()` and `bridge.status()`: USDC to the other chain of the pair with CCTP v2 and Circle's Forwarding Service, as the CLI does for an agent wallet. It ran on testnet on 24 Nov 2026, 0.10 USDC from Arc testnet to Base Sepolia, arriving within the script's wait; the mainnet route has not been run.
 
 ## 0.2.1 (24 Nov 2026)
 
