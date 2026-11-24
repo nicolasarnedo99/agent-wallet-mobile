@@ -506,7 +506,7 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
       return wallets.filter((w: any) => typeof w?.id === 'string' && typeof w?.address === 'string').map((w: any) => ({ id: w.id, address: w.address, blockchain: String(w.blockchain) }));
     },
     // This wallet's latest transactions at Circle, newest first as Circle lists them: contract calls and transfers, not x402
-    // payments, which the seller's facilitator sends.
+    // payments, which the seller's facilitator sends. A contract call that moves a token is listed twice, once as each operation.
     async transactions(limit = 20): Promise<(TransactionStatus & { operation: string | null })[]> {
       const s = await live();
       if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new AgentWalletError('invalid_input', 'The limit is a whole number from 1 to 50');
@@ -514,7 +514,8 @@ export function createAgentWallet(options: { network: Network; fetch?: Fetch; st
       if (!Array.isArray(transactions)) throw broken('Circle sent no transactions');
       return transactions.filter((t: any) => typeof t?.id === 'string').map((t: any) => ({ ...status(t.id, t), operation: typeof t.operation === 'string' ? t.operation : null }));
     },
-    // Every token Circle reports for the wallet, amounts as decimal strings in whole tokens.
+    // Every token Circle reports for the wallet, amounts as decimal strings in whole tokens. A chain's own gas token has no
+    // contract, so its address is empty; on Arc that is USDC, which Circle lists a second time as the ERC-20.
     async balances(): Promise<{ symbol: string; address: string; amount: string }[]> {
       const s = await live();
       const { tokenBalances } = await plain(f, s, 'GET', `/v1/w3s/wallets/${s.walletId}/balances`, s.userToken);

@@ -154,12 +154,12 @@ Testnet and mainnet are separate Circle accounts with separate logins and wallet
 | `limits.read()`, `budget()`, owner login, `set()`, `reset()` | Mainnet only | Circle | No |
 | Contract allowlist and its refusal | Mainnet only | Circle | No |
 | `logout('local')` | Circle | Circle | No |
-| `signMessage()`, `balances()`, `wallets()`, `transactions()` | Stand-in only | Stand-in only | No |
+| `signMessage()`, `balances()`, `wallets()`, `transactions()` | Circle | Stand-in only | No |
 | `cancel()`, `accelerate()` | Stand-in only | Stand-in only | No |
 | Blocklists, recipient lists, `reset(id)` | Mainnet only | Stand-in only | No |
 | `logout('all')` | Never sent | Never sent | No |
 
-The rows marked "stand-in only" were written from the CLI's source and have never met Circle. `npm run smoke -- --extras --no-pay` exercises the first of them against Circle and checks the signed message on-chain.
+The rows marked "stand-in only" were written from the CLI's source and have never met Circle. The message signature was checked on-chain on 24 Nov 2026: the wallet itself, asked through ERC-1271 `isValidSignature`, accepted the 65-byte signature Circle returned. That run also listed the account's wallets, one address on nine testnet chains.
 
 ## On-chain
 
